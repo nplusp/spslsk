@@ -1,8 +1,12 @@
 import asyncio
+import os
 import re
 import logging
+from pathlib import Path
 from dataclasses import dataclass, field
 from app.slskd_client import SlskdClient
+
+DOWNLOADS_DIR = Path("/app/downloads")
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +126,34 @@ def _describe_quality(file_info: dict) -> str:
         return f"{label} {bitrate}kbps" if bitrate else label
 
 
+def _is_already_downloaded(artist: str, title: str) -> str | None:
+    """Check if a track is already in the downloads folder.
+
+    Returns the filename if found, None otherwise.
+    """
+    if not DOWNLOADS_DIR.exists():
+        return None
+
+    clean_title = _clean_query(title).lower()
+    clean_artist = _clean_query(artist).lower().split(",")[0].strip()
+    filler = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is"}
+    title_words = [w for w in clean_title.split() if w not in filler and len(w) > 2]
+
+    for f in DOWNLOADS_DIR.rglob("*"):
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext not in AUDIO_EXTENSIONS:
+            continue
+        fname = f.stem.lower()
+        # Check if artist and at least one title word appear in filename
+        artist_match = any(w in fname for w in clean_artist.split() if len(w) > 2)
+        title_match = any(w in fname for w in title_words) if title_words else True
+        if artist_match and title_match:
+            return f.name
+    return None
+
+
 def _clean_query(text: str) -> str:
     """Clean up search query for better Soulseek results.
 
@@ -201,6 +233,15 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
     for i, track_status in enumerate(session.tracks):
         if not session.active:
             break
+
+        # Skip already downloaded tracks
+        existing = _is_already_downloaded(track_status.artist, track_status.title)
+        if existing:
+            track_status.status = "completed"
+            track_status.quality = "already downloaded"
+            track_status.filename = existing
+            logger.info(f"Skipped (exists): {existing}")
+            continue
 
         # Ensure slskd is connected before searching
         if not await client.health_check():

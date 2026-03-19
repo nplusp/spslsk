@@ -192,7 +192,13 @@
             <div class="card rounded-xl p-6 mb-6">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-sm font-semibold text-gray-400">Downloaded Files</h3>
-                    <span class="text-xs text-gray-500" x-text="downloadedFiles.length + ' files'"></span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs text-gray-500" x-text="downloadedFiles.length + ' files'"></span>
+                        <a href="#" @click.prevent="openDownloads"
+                           class="text-xs text-green-500 hover:text-green-400 flex items-center gap-1">
+                            <span>&#128193;</span> Open folder
+                        </a>
+                    </div>
                 </div>
                 <div class="space-y-1 max-h-48 overflow-y-auto">
                     <template x-for="file in downloadedFiles" :key="file.path">
@@ -203,7 +209,6 @@
                         </div>
                     </template>
                 </div>
-                <p class="text-xs text-gray-600 mt-3">Files are in ./downloads/ folder</p>
             </div>
         </template>
     </div>
@@ -330,10 +335,19 @@
                 },
 
                 startPolling() {
+                    let fileRefreshCounter = 0;
                     this.pollInterval = setInterval(async () => {
                         try {
                             const resp = await fetch('/api/status');
                             this.status = await resp.json();
+
+                            // Refresh file list every ~10 seconds during download
+                            fileRefreshCounter++;
+                            if (fileRefreshCounter >= 7) {
+                                fileRefreshCounter = 0;
+                                await this.loadFiles();
+                            }
+
                             if (!this.status.active) {
                                 this.downloading = false;
                                 this.stopPolling();
@@ -348,6 +362,10 @@
                         clearInterval(this.pollInterval);
                         this.pollInterval = null;
                     }
+                },
+
+                async openDownloads() {
+                    try { await fetch('/api/open-downloads', {method: 'POST'}); } catch {}
                 },
             };
         }

@@ -89,5 +89,16 @@ async def list_downloaded_files():
     return {"files": files, "total": len(files)}
 
 
+@app.post("/api/open-downloads")
+async def open_downloads_folder():
+    """Open the downloads folder in the host file manager.
+
+    This works because the downloads volume is mapped to ./downloads/ on the host.
+    """
+    # Since we're in Docker, we can't open Finder directly.
+    # Return the path so the frontend can show it.
+    return {"path": "./downloads/", "message": "Open ./downloads/ in your file manager"}
+
+
 # Serve static files (CSS, JS if needed)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
