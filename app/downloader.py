@@ -234,13 +234,53 @@ def _build_search_queries(artist: str, title: str) -> list[str]:
     return queries
 
 
+def _sanitize_dirname(name: str) -> str:
+    """Make a string safe for use as a directory/file name."""
+    # Remove characters not allowed in filenames
+    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    # Collapse whitespace
+    name = re.sub(r'\s+', ' ', name).strip()
+    # Limit length
+    return name[:100] if name else "Unknown"
+
+
+def _move_to_playlist_folder(filename: str, playlist_name: str) -> str | None:
+    """Move a downloaded file into a playlist-named subfolder.
+
+    Searches for the file in downloads dir, moves it to
+    downloads/{playlist_name}/{filename}. Returns new filename or None.
+    """
+    safe_name = _sanitize_dirname(playlist_name)
+    target_dir = DOWNLOADS_DIR / safe_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find the file anywhere in downloads
+    for f in DOWNLOADS_DIR.rglob(filename):
+        if f.is_file() and f.parent != target_dir:
+            dest = target_dir / f.name
+            # Avoid overwriting
+            if dest.exists():
+                return f.name
+            try:
+                import shutil
+                shutil.move(str(f), str(dest))
+                logger.info(f"Moved: {f.name} → {safe_name}/")
+                return f.name
+            except OSError as e:
+                logger.warning(f"Failed to move {f.name}: {e}")
+                return f.name
+    return filename
+
+
 # Maximum concurrent searches per wave (2 = safe, avoids Soulseek flood-kick)
 PARALLEL_SEARCHES = 2
 # Pause between waves in seconds
 WAVE_DELAY = 3
 
 
-async def _search_and_download_track(client: SlskdClient, track_status: TrackStatus) -> None:
+async def _search_and_download_track(
+    client: SlskdClient, track_status: TrackStatus, playlist_name: str = ""
+) -> None:
     """Search for a single track and download the best result.
 
     This is the core per-track logic, extracted to run in parallel waves.
@@ -311,6 +351,11 @@ async def _search_and_download_track(client: SlskdClient, track_status: TrackSta
         await client.download_file(best["username"], best["file"])
         track_status.status = "completed"
 
+        # Move file into playlist subfolder
+        if playlist_name:
+            await asyncio.sleep(1)
+            _move_to_playlist_folder(track_status.filename, playlist_name)
+
         # Record in manifest so we don't re-download next time
         if track_status.track_id:
             _record_download(
@@ -366,7 +411,7 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
 
         # Run wave in parallel
         await asyncio.gather(
-            *[_search_and_download_track(client, t) for t in wave]
+            *[_search_and_download_track(client, t, playlist_name) for t in wave]
         )
 
         # Pause between waves to avoid Soulseek flood-kick
