@@ -93,6 +93,16 @@ async def list_downloaded_files():
     return {"files": files, "total": len(files)}
 
 
+@app.get("/api/manifest")
+async def get_manifest():
+    """Return the entire download manifest for client-side lookups.
+
+    Loaded once on page init, then checked locally in JS — no network
+    request needed per playlist.
+    """
+    return _load_manifest()
+
+
 @app.post("/api/check-downloaded")
 async def check_downloaded(req: CheckDownloadedRequest):
     """Check which track IDs are already downloaded via manifest."""

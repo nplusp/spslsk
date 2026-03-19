@@ -329,7 +329,7 @@
                 history: [],
                 expandedHistory: null,
 
-                // Map of track_id -> {filename, quality} for already downloaded tracks
+                // Full manifest: track_id -> {filename, quality} — loaded once
                 downloadedMap: {},
 
                 get displayTracks() {
@@ -367,6 +367,7 @@
 
                 async init() {
                     await this.checkHealth();
+                    await this.loadManifest();
                     await this.loadFiles();
                     this.loadHistory();
 
@@ -377,7 +378,6 @@
                             const data = JSON.parse(cached);
                             this.playlistUrl = data.url || '';
                             this.playlist = data.playlist || null;
-                            if (this.playlist) await this.checkDownloaded();
                         } catch {}
                     }
 
@@ -441,7 +441,7 @@
                         playlist: item.playlist,
                         ts: Date.now(),
                     }));
-                    this.checkDownloaded();
+                    this.loadManifest();
                 },
 
                 clearHistory() {
@@ -462,17 +462,10 @@
 
                 // --- Core functionality ---
 
-                async checkDownloaded() {
-                    if (!this.playlist || !this.playlist.tracks) return;
+                async loadManifest() {
                     try {
-                        const ids = this.playlist.tracks.map(t => t.id).filter(Boolean);
-                        const resp = await fetch('/api/check-downloaded', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({track_ids: ids}),
-                        });
-                        const data = await resp.json();
-                        this.downloadedMap = data.downloaded || {};
+                        const resp = await fetch('/api/manifest');
+                        this.downloadedMap = await resp.json();
                     } catch {}
                 },
 
@@ -540,7 +533,7 @@
                         }));
                         // Also save to history
                         this.saveToHistory(this.playlistUrl, this.playlist);
-                        await this.checkDownloaded();
+                        await this.loadManifest();
                     } catch (e) {
                         this.error = e.message;
                     } finally {
@@ -586,6 +579,7 @@
                             if (!this.status.active) {
                                 this.downloading = false;
                                 this.stopPolling();
+                                await this.loadManifest();
                                 await this.loadFiles();
                             }
                         } catch {}
