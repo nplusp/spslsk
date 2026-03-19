@@ -43,10 +43,15 @@
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%; display: inline-block;
         }
-        .collapse-transition {
-            transition: max-height 0.3s ease, opacity 0.3s ease;
-            overflow: hidden;
+        .tab-active {
+            color: #1DB954;
+            border-bottom: 2px solid #1DB954;
         }
+        .tab-inactive {
+            color: #666;
+            border-bottom: 2px solid transparent;
+        }
+        .tab-inactive:hover { color: #999; }
     </style>
 </head>
 <body class="text-white min-h-screen" x-data="app()" x-cloak>
@@ -54,16 +59,14 @@
     <!-- Top status bar during download -->
     <template x-if="downloading && status">
         <div class="fixed top-0 left-0 right-0 z-50">
-            <!-- Progress bar -->
             <div class="h-1 bg-gray-800">
                 <div
                     class="h-1 bg-green-500 transition-all duration-1000"
                     :style="`width: ${((status.completed + status.not_found + status.errors) / status.total) * 100}%`"
                 ></div>
             </div>
-            <!-- Current track info -->
             <div class="bg-black/80 backdrop-blur-sm border-b border-gray-800 px-4 py-2">
-                <div class="max-w-2xl mx-auto flex items-center gap-3 text-xs">
+                <div class="max-w-6xl mx-auto flex items-center gap-3 text-xs">
                     <span class="text-green-500 pulse">&#9679;</span>
                     <span class="text-gray-400 flex-1 truncate" x-text="currentDownloadingTrack"></span>
                     <span class="text-gray-500 whitespace-nowrap"
@@ -75,242 +78,285 @@
         </div>
     </template>
 
-    <div class="max-w-2xl mx-auto px-4 py-12" :class="downloading && status ? 'pt-20' : 'pt-12'">
+    <div class="max-w-6xl mx-auto px-4" :class="downloading && status ? 'pt-16' : 'pt-8'">
         <!-- Header -->
-        <div class="text-center mb-10">
-            <h1 class="text-4xl font-bold mb-2">
+        <div class="text-center mb-6">
+            <h1 class="text-3xl font-bold mb-1">
                 <span class="gradient-text">spslsk</span>
             </h1>
-            <p class="text-gray-500 text-sm">Spotify playlist &rarr; Soulseek download</p>
+            <p class="text-gray-500 text-xs">Spotify playlist &rarr; Soulseek download</p>
         </div>
 
         <!-- Connection status -->
-        <div class="flex items-center justify-center gap-2 mb-8 text-sm">
+        <div class="flex items-center justify-center gap-2 mb-6 text-xs">
             <span class="status-dot" :class="slskdOk ? 'bg-green-500' : 'bg-red-500'"></span>
             <span class="text-gray-400" x-text="slskdOk ? 'slskd connected' : 'slskd not reachable'"></span>
         </div>
 
-        <!-- Input -->
-        <div class="card rounded-xl p-6 mb-6">
-            <label class="block text-gray-400 text-sm mb-2">Spotify Playlist URL</label>
-            <div class="flex gap-3">
-                <input
-                    type="text"
-                    x-model="playlistUrl"
-                    placeholder="https://open.spotify.com/playlist/..."
-                    class="input-dark flex-1 rounded-lg px-4 py-3 text-sm"
-                    @keydown.enter="fetchPlaylist"
-                >
-                <button
-                    class="btn-green rounded-lg px-6 py-3 text-sm"
-                    :disabled="loading || !playlistUrl"
-                    @click="fetchPlaylist"
-                >
-                    <span x-show="!loading">Load</span>
-                    <span x-show="loading" class="pulse">...</span>
-                </button>
-            </div>
-            <p x-show="error" class="text-red-400 text-sm mt-2" x-text="error"></p>
-        </div>
-
-        <!-- Current playlist -->
-        <template x-if="playlist">
-            <div class="card rounded-xl p-6 mb-6">
-                <div class="flex items-center gap-4 mb-4">
-                    <img
-                        x-show="playlist.image"
-                        :src="playlist.image"
-                        class="w-16 h-16 rounded-lg object-cover"
-                    >
-                    <div>
-                        <h2 class="text-lg font-semibold" x-text="playlist.name"></h2>
-                        <p class="text-gray-500 text-sm">
-                            <span x-text="playlist.total"></span> tracks
-                            <template x-if="currentDownloadedCount > 0">
-                                <span class="text-green-500">
-                                    &middot; <span x-text="currentDownloadedCount"></span> downloaded
-                                </span>
-                            </template>
-                        </p>
-                    </div>
-                    <div class="ml-auto">
-                        <button
-                            x-show="!downloading"
-                            class="btn-green rounded-lg px-6 py-2 text-sm"
-                            @click="startDownload"
+        <!-- Two-column layout -->
+        <div class="flex gap-6">
+            <!-- LEFT: Main content -->
+            <div class="flex-1 min-w-0">
+                <!-- Input -->
+                <div class="card rounded-xl p-5 mb-5">
+                    <label class="block text-gray-400 text-xs mb-2">Spotify Playlist URL</label>
+                    <div class="flex gap-3">
+                        <input
+                            type="text"
+                            x-model="playlistUrl"
+                            placeholder="https://open.spotify.com/playlist/..."
+                            class="input-dark flex-1 rounded-lg px-4 py-2.5 text-sm"
+                            @keydown.enter="fetchPlaylist"
                         >
-                            Download All
-                        </button>
                         <button
-                            x-show="downloading"
-                            class="rounded-lg px-6 py-2 text-sm bg-red-600 hover:bg-red-500 font-semibold"
-                            @click="stopDownload"
+                            class="btn-green rounded-lg px-5 py-2.5 text-sm"
+                            :disabled="loading || !playlistUrl"
+                            @click="fetchPlaylist"
                         >
-                            Stop
+                            <span x-show="!loading">Load</span>
+                            <span x-show="loading" class="pulse">...</span>
                         </button>
                     </div>
+                    <p x-show="error" class="text-red-400 text-xs mt-2" x-text="error"></p>
                 </div>
 
-                <!-- Progress bar -->
-                <template x-if="status && status.total > 0">
-                    <div class="mb-4">
-                        <div class="flex justify-between text-xs text-gray-500 mb-1">
-                            <span>
-                                <span x-text="status.completed"></span>/<span x-text="status.total"></span> done
-                            </span>
-                            <span x-show="status.not_found > 0" class="text-yellow-500">
-                                <span x-text="status.not_found"></span> not found
-                            </span>
+                <!-- Current playlist -->
+                <template x-if="playlist">
+                    <div class="card rounded-xl p-5">
+                        <div class="flex items-center gap-4 mb-4">
+                            <img
+                                x-show="playlist.image"
+                                :src="playlist.image"
+                                class="w-14 h-14 rounded-lg object-cover"
+                            >
+                            <div class="min-w-0">
+                                <h2 class="text-base font-semibold truncate" x-text="playlist.name"></h2>
+                                <p class="text-gray-500 text-xs">
+                                    <span x-text="playlist.total"></span> tracks
+                                    <template x-if="currentDownloadedCount > 0">
+                                        <span class="text-green-500">
+                                            &middot; <span x-text="currentDownloadedCount"></span> downloaded
+                                        </span>
+                                    </template>
+                                </p>
+                            </div>
+                            <div class="ml-auto flex-shrink-0">
+                                <button
+                                    x-show="!downloading"
+                                    class="btn-green rounded-lg px-5 py-2 text-sm"
+                                    @click="startDownload"
+                                >
+                                    Download All
+                                </button>
+                                <button
+                                    x-show="downloading"
+                                    class="rounded-lg px-5 py-2 text-sm bg-red-600 hover:bg-red-500 font-semibold"
+                                    @click="stopDownload"
+                                >
+                                    Stop
+                                </button>
+                            </div>
                         </div>
-                        <div class="w-full bg-gray-800 rounded-full h-1.5">
-                            <div
-                                class="bg-green-500 h-1.5 rounded-full transition-all duration-500"
-                                :style="`width: ${((status.completed + status.not_found + status.errors) / status.total) * 100}%`"
-                            ></div>
+
+                        <!-- Progress bar -->
+                        <template x-if="status && status.total > 0">
+                            <div class="mb-3">
+                                <div class="flex justify-between text-xs text-gray-500 mb-1">
+                                    <span>
+                                        <span x-text="status.completed"></span>/<span x-text="status.total"></span> done
+                                    </span>
+                                    <span x-show="status.not_found > 0" class="text-yellow-500">
+                                        <span x-text="status.not_found"></span> not found
+                                    </span>
+                                </div>
+                                <div class="w-full bg-gray-800 rounded-full h-1.5">
+                                    <div
+                                        class="bg-green-500 h-1.5 rounded-full transition-all duration-500"
+                                        :style="`width: ${((status.completed + status.not_found + status.errors) / status.total) * 100}%`"
+                                    ></div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- Track list -->
+                        <div class="space-y-0.5 max-h-[calc(100vh-320px)] overflow-y-auto">
+                            <template x-for="(track, idx) in displayTracks" :key="idx">
+                                <div class="flex items-center gap-3 py-1.5 px-3 rounded-lg hover:bg-white/5 text-sm">
+                                    <div class="w-4 flex-shrink-0 text-center">
+                                        <template x-if="track.status === 'pending'">
+                                            <span class="text-gray-600 text-xs">&#9679;</span>
+                                        </template>
+                                        <template x-if="track.status === 'searching'">
+                                            <span class="text-yellow-400 pulse text-xs">&#8987;</span>
+                                        </template>
+                                        <template x-if="track.status === 'downloading'">
+                                            <span class="text-blue-400 pulse text-xs">&darr;</span>
+                                        </template>
+                                        <template x-if="track.status === 'completed'">
+                                            <span class="text-green-500 text-xs">&#10003;</span>
+                                        </template>
+                                        <template x-if="track.status === 'not_found'">
+                                            <span class="text-yellow-500 text-xs">?</span>
+                                        </template>
+                                        <template x-if="track.status === 'error'">
+                                            <span class="text-red-500 text-xs">!</span>
+                                        </template>
+                                    </div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="truncate">
+                                            <span class="text-white" x-text="track.title"></span>
+                                            <span class="text-gray-500"> &mdash; </span>
+                                            <span class="text-gray-400" x-text="track.artist"></span>
+                                        </div>
+                                    </div>
+                                    <div x-show="track.quality" class="flex-shrink-0">
+                                        <span
+                                            class="text-xs px-2 py-0.5 rounded-full"
+                                            :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' :
+                                                    track.quality === 'already downloaded' ? 'bg-gray-700 text-gray-400' :
+                                                    'bg-gray-700 text-gray-300'"
+                                            x-text="track.quality"
+                                        ></span>
+                                    </div>
+                                </div>
+                            </template>
                         </div>
                     </div>
                 </template>
-
-                <!-- Track list -->
-                <div class="space-y-1 max-h-96 overflow-y-auto">
-                    <template x-for="(track, idx) in displayTracks" :key="idx">
-                        <div class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-white/5 text-sm">
-                            <!-- Status icon -->
-                            <div class="w-5 flex-shrink-0 text-center">
-                                <template x-if="track.status === 'pending'">
-                                    <span class="text-gray-600">&#9679;</span>
-                                </template>
-                                <template x-if="track.status === 'searching'">
-                                    <span class="text-yellow-400 pulse">&#8987;</span>
-                                </template>
-                                <template x-if="track.status === 'downloading'">
-                                    <span class="text-blue-400 pulse">&darr;</span>
-                                </template>
-                                <template x-if="track.status === 'completed'">
-                                    <span class="text-green-500">&#10003;</span>
-                                </template>
-                                <template x-if="track.status === 'not_found'">
-                                    <span class="text-yellow-500">?</span>
-                                </template>
-                                <template x-if="track.status === 'error'">
-                                    <span class="text-red-500">!</span>
-                                </template>
-                            </div>
-
-                            <!-- Track info -->
-                            <div class="flex-1 min-w-0">
-                                <div class="truncate">
-                                    <span class="text-white" x-text="track.title"></span>
-                                    <span class="text-gray-500"> &mdash; </span>
-                                    <span class="text-gray-400" x-text="track.artist"></span>
-                                </div>
-                            </div>
-
-                            <!-- Quality badge -->
-                            <div x-show="track.quality" class="flex-shrink-0">
-                                <span
-                                    class="text-xs px-2 py-0.5 rounded-full"
-                                    :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' :
-                                            track.quality === 'already downloaded' ? 'bg-gray-700 text-gray-400' :
-                                            'bg-gray-700 text-gray-300'"
-                                    x-text="track.quality"
-                                ></span>
-                            </div>
-                        </div>
-                    </template>
-                </div>
             </div>
-        </template>
 
-        <!-- Playlist history -->
-        <template x-if="history.length > 0">
-            <div class="mb-6">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="text-sm font-semibold text-gray-400">Previous Playlists</h3>
-                    <button
-                        @click="clearHistory"
-                        class="text-xs text-gray-600 hover:text-gray-400"
-                    >Clear</button>
-                </div>
-                <div class="space-y-2">
-                    <template x-for="(item, idx) in history" :key="item.url">
-                        <div class="card rounded-xl overflow-hidden">
-                            <!-- Collapsed header (always visible) -->
-                            <div
-                                class="flex items-center gap-3 p-4 cursor-pointer hover:bg-white/5"
-                                @click="toggleHistory(idx)"
-                            >
-                                <img
-                                    x-show="item.playlist.image"
-                                    :src="item.playlist.image"
-                                    class="w-10 h-10 rounded object-cover"
+            <!-- RIGHT: Sidebar with tabs -->
+            <div class="w-72 flex-shrink-0 hidden lg:block">
+                <div class="card rounded-xl overflow-hidden sticky top-20">
+                    <!-- Tabs -->
+                    <div class="flex border-b border-gray-800">
+                        <button
+                            class="flex-1 py-2.5 text-xs font-medium text-center transition-colors"
+                            :class="sidebarTab === 'history' ? 'tab-active' : 'tab-inactive'"
+                            @click="sidebarTab = 'history'"
+                        >
+                            History
+                            <span x-show="history.length > 0"
+                                  class="ml-1 text-gray-600" x-text="'(' + history.length + ')'"></span>
+                        </button>
+                        <button
+                            class="flex-1 py-2.5 text-xs font-medium text-center transition-colors"
+                            :class="sidebarTab === 'files' ? 'tab-active' : 'tab-inactive'"
+                            @click="sidebarTab = 'files'"
+                        >
+                            Files
+                            <span x-show="downloadedFiles.length > 0"
+                                  class="ml-1 text-gray-600" x-text="'(' + downloadedFiles.length + ')'"></span>
+                        </button>
+                    </div>
+
+                    <!-- History tab -->
+                    <div x-show="sidebarTab === 'history'" class="max-h-[calc(100vh-200px)] overflow-y-auto">
+                        <template x-if="history.length === 0">
+                            <p class="text-gray-600 text-xs p-4 text-center">No playlists yet</p>
+                        </template>
+                        <div class="divide-y divide-gray-800/50">
+                            <template x-for="(item, idx) in history" :key="item.url">
+                                <div
+                                    class="p-3 hover:bg-white/5 cursor-pointer transition-colors"
+                                    @click="loadFromHistory(item)"
                                 >
-                                <div class="flex-1 min-w-0">
-                                    <p class="text-sm font-medium truncate" x-text="item.playlist.name"></p>
-                                    <p class="text-xs text-gray-500">
-                                        <span x-text="item.playlist.total"></span> tracks
-                                        &middot;
-                                        <span x-text="timeAgo(item.ts)"></span>
-                                    </p>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <button
-                                        @click.stop="loadFromHistory(item)"
-                                        class="text-xs text-green-500 hover:text-green-400 px-2 py-1"
-                                    >Load</button>
-                                    <span
-                                        class="text-gray-500 text-xs transition-transform"
-                                        :class="expandedHistory === idx ? 'rotate-180' : ''"
-                                    >&#9660;</span>
-                                </div>
-                            </div>
-
-                            <!-- Expanded track list -->
-                            <div
-                                x-show="expandedHistory === idx"
-                                x-transition
-                                class="border-t border-gray-800 px-4 pb-3"
-                            >
-                                <div class="space-y-0.5 max-h-48 overflow-y-auto pt-2">
-                                    <template x-for="track in item.playlist.tracks" :key="track.id || track.title">
-                                        <div class="flex items-center gap-2 py-1 text-xs text-gray-400">
-                                            <span class="text-gray-600">&#9835;</span>
-                                            <span class="truncate" x-text="track.title + ' — ' + track.artist"></span>
+                                    <div class="flex items-center gap-2.5">
+                                        <img
+                                            x-show="item.playlist.image"
+                                            :src="item.playlist.image"
+                                            class="w-8 h-8 rounded object-cover flex-shrink-0"
+                                        >
+                                        <div class="min-w-0 flex-1">
+                                            <p class="text-xs font-medium truncate" x-text="item.playlist.name"></p>
+                                            <p class="text-xs text-gray-600">
+                                                <span x-text="item.playlist.total"></span> tracks
+                                                &middot; <span x-text="timeAgo(item.ts)"></span>
+                                            </p>
                                         </div>
-                                    </template>
+                                    </div>
                                 </div>
-                            </div>
+                            </template>
                         </div>
-                    </template>
-                </div>
-            </div>
-        </template>
+                        <template x-if="history.length > 0">
+                            <div class="p-2 border-t border-gray-800">
+                                <button
+                                    @click="clearHistory"
+                                    class="text-xs text-gray-600 hover:text-gray-400 w-full text-center py-1"
+                                >Clear history</button>
+                            </div>
+                        </template>
+                    </div>
 
-        <!-- Downloaded files -->
-        <template x-if="downloadedFiles.length > 0">
-            <div class="card rounded-xl p-6 mb-6">
-                <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-sm font-semibold text-gray-400">Downloaded Files</h3>
-                    <div class="flex items-center gap-3">
-                        <span class="text-xs text-gray-500" x-text="downloadedFiles.length + ' files'"></span>
-                        <a href="#" @click.prevent="openDownloads"
-                           class="text-xs text-green-500 hover:text-green-400 flex items-center gap-1">
-                            <span>&#128193;</span>
-                            <span x-text="folderCopied ? 'Copied! Paste in terminal' : 'Open folder'"></span>
-                        </a>
+                    <!-- Files tab -->
+                    <div x-show="sidebarTab === 'files'" class="max-h-[calc(100vh-200px)] overflow-y-auto">
+                        <template x-if="downloadedFiles.length === 0">
+                            <p class="text-gray-600 text-xs p-4 text-center">No files yet</p>
+                        </template>
+                        <div class="divide-y divide-gray-800/50">
+                            <template x-for="file in downloadedFiles" :key="file.path">
+                                <div class="flex items-center gap-2 py-1.5 px-3 text-xs text-gray-400">
+                                    <span class="text-green-500">&#9835;</span>
+                                    <span class="flex-1 truncate" x-text="file.name"></span>
+                                    <span class="text-gray-600 flex-shrink-0" x-text="file.size_mb + 'MB'"></span>
+                                </div>
+                            </template>
+                        </div>
+                        <template x-if="downloadedFiles.length > 0">
+                            <div class="p-2 border-t border-gray-800">
+                                <a href="#" @click.prevent="openDownloads"
+                                   class="text-xs text-green-500 hover:text-green-400 flex items-center justify-center gap-1 py-1">
+                                    <span>&#128193;</span>
+                                    <span x-text="folderCopied ? 'Copied!' : 'Open folder'"></span>
+                                </a>
+                            </div>
+                        </template>
                     </div>
                 </div>
-                <div class="space-y-1 max-h-48 overflow-y-auto">
-                    <template x-for="file in downloadedFiles" :key="file.path">
-                        <div class="flex items-center gap-3 py-1.5 px-3 text-sm text-gray-300">
-                            <span class="text-green-500 text-xs">&#9835;</span>
-                            <span class="flex-1 truncate" x-text="file.name"></span>
-                            <span class="text-gray-600 text-xs" x-text="file.size_mb + ' MB'"></span>
-                        </div>
-                    </template>
-                </div>
             </div>
-        </template>
+        </div>
+
+        <!-- Mobile: collapsible sections below (visible only on small screens) -->
+        <div class="lg:hidden mt-6 space-y-4">
+            <template x-if="history.length > 0">
+                <details class="card rounded-xl">
+                    <summary class="p-4 text-sm font-semibold text-gray-400 cursor-pointer">
+                        Previous Playlists (<span x-text="history.length"></span>)
+                    </summary>
+                    <div class="px-4 pb-4 space-y-2">
+                        <template x-for="item in history" :key="item.url">
+                            <div
+                                class="flex items-center gap-2 p-2 rounded-lg hover:bg-white/5 cursor-pointer"
+                                @click="loadFromHistory(item)"
+                            >
+                                <img x-show="item.playlist.image" :src="item.playlist.image"
+                                     class="w-8 h-8 rounded object-cover">
+                                <div class="min-w-0">
+                                    <p class="text-xs font-medium truncate" x-text="item.playlist.name"></p>
+                                    <p class="text-xs text-gray-600" x-text="item.playlist.total + ' tracks'"></p>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </details>
+            </template>
+            <template x-if="downloadedFiles.length > 0">
+                <details class="card rounded-xl">
+                    <summary class="p-4 text-sm font-semibold text-gray-400 cursor-pointer">
+                        Downloaded Files (<span x-text="downloadedFiles.length"></span>)
+                    </summary>
+                    <div class="px-4 pb-4 space-y-1">
+                        <template x-for="file in downloadedFiles" :key="file.path">
+                            <div class="flex items-center gap-2 text-xs text-gray-400">
+                                <span class="text-green-500">&#9835;</span>
+                                <span class="truncate" x-text="file.name"></span>
+                                <span class="text-gray-600 ml-auto" x-text="file.size_mb + 'MB'"></span>
+                            </div>
+                        </template>
+                    </div>
+                </details>
+            </template>
+        </div>
     </div>
 
     <script>
@@ -327,7 +373,7 @@
                 downloadedFiles: [],
                 folderCopied: false,
                 history: [],
-                expandedHistory: null,
+                sidebarTab: 'history',
 
                 // Full manifest: track_id -> {filename, quality} — loaded once
                 downloadedMap: {},
@@ -371,7 +417,6 @@
                     await this.loadFiles();
                     this.loadHistory();
 
-                    // Restore last playlist from localStorage
                     const cached = localStorage.getItem('spslsk_last');
                     if (cached) {
                         try {
@@ -381,14 +426,11 @@
                         } catch {}
                     }
 
-                    // Check if there's an active download session
                     try {
                         const resp = await fetch('/api/status');
                         const st = await resp.json();
                         if (st.total > 0) {
                             this.status = st;
-
-                            // Restore playlist info from status if we lost it
                             if (!this.playlist && st.playlist_name) {
                                 this.playlist = {
                                     name: st.playlist_name,
@@ -401,16 +443,18 @@
                                     })),
                                 };
                             }
-
                             if (st.active) {
                                 this.downloading = true;
                                 this.startPolling();
                             }
                         }
                     } catch {}
-                },
 
-                // --- History management ---
+                    // Auto-switch to files tab if we have files but no history
+                    if (this.downloadedFiles.length > 0 && this.history.length === 0) {
+                        this.sidebarTab = 'files';
+                    }
+                },
 
                 loadHistory() {
                     try {
@@ -419,23 +463,16 @@
                 },
 
                 saveToHistory(url, playlist) {
-                    // Remove duplicate if exists
                     this.history = this.history.filter(h => h.url !== url);
-                    // Add to front (most recent first), keep max 20
                     this.history.unshift({ url, playlist, ts: Date.now() });
                     if (this.history.length > 20) this.history = this.history.slice(0, 20);
                     localStorage.setItem('spslsk_history', JSON.stringify(this.history));
-                },
-
-                toggleHistory(idx) {
-                    this.expandedHistory = this.expandedHistory === idx ? null : idx;
                 },
 
                 loadFromHistory(item) {
                     this.playlistUrl = item.url;
                     this.playlist = item.playlist;
                     this.status = null;
-                    // Save as current
                     localStorage.setItem('spslsk_last', JSON.stringify({
                         url: item.url,
                         playlist: item.playlist,
@@ -459,8 +496,6 @@
                     const days = Math.floor(hours / 24);
                     return days + 'd ago';
                 },
-
-                // --- Core functionality ---
 
                 async loadManifest() {
                     try {
@@ -489,17 +524,12 @@
 
                 async fetchPlaylist() {
                     if (!this.playlistUrl) return;
-
-                    // Stop active download gracefully (progress is saved in manifest)
-                    if (this.downloading) {
-                        await this.stopDownload();
-                    }
+                    if (this.downloading) await this.stopDownload();
 
                     this.loading = true;
                     this.error = '';
                     this.status = null;
 
-                    // Save current playlist to history before loading new one
                     if (this.playlist && this.playlistUrl) {
                         const currentUrl = localStorage.getItem('spslsk_last');
                         if (currentUrl) {
@@ -525,13 +555,11 @@
                             throw new Error(err.detail || 'Failed to load playlist');
                         }
                         this.playlist = await resp.json();
-                        // Cache in localStorage
                         localStorage.setItem('spslsk_last', JSON.stringify({
                             url: this.playlistUrl,
                             playlist: this.playlist,
                             ts: Date.now(),
                         }));
-                        // Also save to history
                         this.saveToHistory(this.playlistUrl, this.playlist);
                         await this.loadManifest();
                     } catch (e) {
@@ -560,6 +588,7 @@
                     await fetch('/api/stop', {method: 'POST'});
                     this.downloading = false;
                     this.stopPolling();
+                    this.updateTitle();
                 },
 
                 updateTitle() {
@@ -582,7 +611,6 @@
                             this.status = await resp.json();
                             this.updateTitle();
 
-                            // Refresh file list every ~10 seconds during download
                             fileRefreshCounter++;
                             if (fileRefreshCounter >= 7) {
                                 fileRefreshCounter = 0;
@@ -595,6 +623,10 @@
                                 this.updateTitle();
                                 await this.loadManifest();
                                 await this.loadFiles();
+                                // Switch to files tab when done
+                                if (this.downloadedFiles.length > 0) {
+                                    this.sidebarTab = 'files';
+                                }
                             }
                         } catch {}
                     }, 1500);
@@ -609,10 +641,8 @@
 
                 async openDownloads() {
                     try {
-                        // Call host-side helper to open Finder natively
                         await fetch('http://localhost:8001/open-folder', {method: 'POST'});
                     } catch {
-                        // Fallback: copy command to clipboard
                         navigator.clipboard.writeText('open ./downloads/').then(() => {
                             this.folderCopied = true;
                             setTimeout(() => this.folderCopied = false, 2000);
