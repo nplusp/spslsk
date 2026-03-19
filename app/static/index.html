@@ -51,7 +51,31 @@
 </head>
 <body class="text-white min-h-screen" x-data="app()" x-cloak>
 
-    <div class="max-w-2xl mx-auto px-4 py-12">
+    <!-- Top status bar during download -->
+    <template x-if="downloading && status">
+        <div class="fixed top-0 left-0 right-0 z-50">
+            <!-- Progress bar -->
+            <div class="h-1 bg-gray-800">
+                <div
+                    class="h-1 bg-green-500 transition-all duration-1000"
+                    :style="`width: ${((status.completed + status.not_found + status.errors) / status.total) * 100}%`"
+                ></div>
+            </div>
+            <!-- Current track info -->
+            <div class="bg-black/80 backdrop-blur-sm border-b border-gray-800 px-4 py-2">
+                <div class="max-w-2xl mx-auto flex items-center gap-3 text-xs">
+                    <span class="text-green-500 pulse">&#9679;</span>
+                    <span class="text-gray-400 flex-1 truncate" x-text="currentDownloadingTrack"></span>
+                    <span class="text-gray-500 whitespace-nowrap"
+                          x-text="status.completed + '/' + status.total + ' done'"></span>
+                    <span x-show="status.not_found > 0" class="text-yellow-500 whitespace-nowrap"
+                          x-text="status.not_found + ' missed'"></span>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <div class="max-w-2xl mx-auto px-4 py-12" :class="downloading && status ? 'pt-20' : 'pt-12'">
         <!-- Header -->
         <div class="text-center mb-10">
             <h1 class="text-4xl font-bold mb-2">
@@ -324,6 +348,18 @@
                     return [];
                 },
 
+                get currentDownloadingTrack() {
+                    if (!this.status || !this.status.tracks) return '';
+                    const active = this.status.tracks.find(t =>
+                        t.status === 'downloading' || t.status === 'searching'
+                    );
+                    if (active) {
+                        const verb = active.status === 'searching' ? 'Searching' : 'Downloading';
+                        return `${verb}: ${active.title} — ${active.artist}`;
+                    }
+                    return 'Processing...';
+                },
+
                 get currentDownloadedCount() {
                     if (!this.playlist) return 0;
                     return this.playlist.tracks.filter(t => this.downloadedMap[t.id]).length;
@@ -351,6 +387,21 @@
                         const st = await resp.json();
                         if (st.total > 0) {
                             this.status = st;
+
+                            // Restore playlist info from status if we lost it
+                            if (!this.playlist && st.playlist_name) {
+                                this.playlist = {
+                                    name: st.playlist_name,
+                                    image: null,
+                                    total: st.total,
+                                    tracks: st.tracks.map(t => ({
+                                        id: t.track_id || '',
+                                        artist: t.artist,
+                                        title: t.title,
+                                    })),
+                                };
+                            }
+
                             if (st.active) {
                                 this.downloading = true;
                                 this.startPolling();
@@ -446,11 +497,8 @@
                 async fetchPlaylist() {
                     if (!this.playlistUrl) return;
 
-                    // Warn if download is active
+                    // Stop active download gracefully (progress is saved in manifest)
                     if (this.downloading) {
-                        if (!confirm('Download is in progress. Stop it and load new playlist?')) {
-                            return;
-                        }
                         await this.stopDownload();
                     }
 

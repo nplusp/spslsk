@@ -368,6 +368,7 @@ def get_session_status() -> dict:
             {
                 "artist": t.artist,
                 "title": t.title,
+                "track_id": t.track_id,
                 "status": t.status,
                 "quality": t.quality,
                 "filename": t.filename,
