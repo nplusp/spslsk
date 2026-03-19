@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.spotify import get_playlist_tracks
 from app.slskd_client import SlskdClient
-from app.downloader import process_playlist, get_session_status, stop_session
+from app.downloader import process_playlist, get_session_status, stop_session, _load_manifest
 
 app = FastAPI(title="Spotify → Soulseek Downloader")
 
@@ -19,6 +19,10 @@ class PlaylistRequest(BaseModel):
 
 class DownloadRequest(BaseModel):
     url: str
+
+
+class CheckDownloadedRequest(BaseModel):
+    track_ids: list[str]
 
 
 @app.get("/")
@@ -87,6 +91,21 @@ async def list_downloaded_files():
                     "size_mb": round(f.stat().st_size / 1024 / 1024, 1),
                 })
     return {"files": files, "total": len(files)}
+
+
+@app.post("/api/check-downloaded")
+async def check_downloaded(req: CheckDownloadedRequest):
+    """Check which track IDs are already downloaded via manifest."""
+    manifest = _load_manifest()
+    downloaded = {}
+    for tid in req.track_ids:
+        entry = manifest.get(tid)
+        if entry:
+            downloaded[tid] = {
+                "filename": entry["filename"],
+                "quality": entry.get("quality", "downloaded"),
+            }
+    return {"downloaded": downloaded}
 
 
 @app.post("/api/open-downloads")

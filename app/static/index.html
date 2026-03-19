@@ -197,7 +197,7 @@
                         <a href="#" @click.prevent="openDownloads"
                            class="text-xs text-green-500 hover:text-green-400 flex items-center gap-1">
                             <span>&#128193;</span>
-                            <span x-text="folderCopied ? 'Copied! Run in terminal' : 'Copy open command'"></span>
+                            <span x-text="folderCopied ? 'Copied! Paste in terminal' : 'Open folder'"></span>
                         </a>
                     </div>
                 </div>
@@ -228,12 +228,21 @@
                 downloadedFiles: [],
                 folderCopied: false,
 
+                // Map of track_id -> {filename, quality} for already downloaded tracks
+                downloadedMap: {},
+
                 get displayTracks() {
                     if (this.status && this.status.tracks) {
                         return this.status.tracks;
                     }
                     if (this.playlist) {
-                        return this.playlist.tracks.map(t => ({...t, status: 'pending', quality: ''}));
+                        return this.playlist.tracks.map(t => {
+                            const dl = this.downloadedMap[t.id];
+                            if (dl) {
+                                return {...t, status: 'completed', quality: 'already downloaded', filename: dl.filename};
+                            }
+                            return {...t, status: 'pending', quality: ''};
+                        });
                     }
                     return [];
                 },
@@ -249,6 +258,7 @@
                             const data = JSON.parse(cached);
                             this.playlistUrl = data.url || '';
                             this.playlist = data.playlist || null;
+                            if (this.playlist) await this.checkDownloaded();
                         } catch {}
                     }
 
@@ -263,6 +273,20 @@
                                 this.startPolling();
                             }
                         }
+                    } catch {}
+                },
+
+                async checkDownloaded() {
+                    if (!this.playlist || !this.playlist.tracks) return;
+                    try {
+                        const ids = this.playlist.tracks.map(t => t.id).filter(Boolean);
+                        const resp = await fetch('/api/check-downloaded', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({track_ids: ids}),
+                        });
+                        const data = await resp.json();
+                        this.downloadedMap = data.downloaded || {};
                     } catch {}
                 },
 
@@ -308,6 +332,7 @@
                             playlist: this.playlist,
                             ts: Date.now(),
                         }));
+                        await this.checkDownloaded();
                     } catch (e) {
                         this.error = e.message;
                     } finally {
@@ -366,14 +391,17 @@
                     }
                 },
 
-                openDownloads() {
-                    const path = window.location.origin.replace(/:\d+$/, '')
-                        ? '~/lib/spotasoul/downloads/'
-                        : './downloads/';
-                    navigator.clipboard.writeText('open ./downloads/').then(() => {
-                        this.folderCopied = true;
-                        setTimeout(() => this.folderCopied = false, 2000);
-                    });
+                async openDownloads() {
+                    try {
+                        // Call host-side helper to open Finder natively
+                        await fetch('http://localhost:8001/open-folder', {method: 'POST'});
+                    } catch {
+                        // Fallback: copy command to clipboard
+                        navigator.clipboard.writeText('open ./downloads/').then(() => {
+                            this.folderCopied = true;
+                            setTimeout(() => this.folderCopied = false, 2000);
+                        });
+                    }
                 },
             };
         }
