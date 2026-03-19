@@ -234,8 +234,102 @@ def _build_search_queries(artist: str, title: str) -> list[str]:
     return queries
 
 
+# Maximum concurrent searches per wave (2 = safe, avoids Soulseek flood-kick)
+PARALLEL_SEARCHES = 2
+# Pause between waves in seconds
+WAVE_DELAY = 3
+
+
+async def _search_and_download_track(client: SlskdClient, track_status: TrackStatus) -> None:
+    """Search for a single track and download the best result.
+
+    This is the core per-track logic, extracted to run in parallel waves.
+    """
+    # Skip already downloaded tracks (by Spotify track ID)
+    if track_status.track_id:
+        existing = _is_already_downloaded(track_status.track_id)
+        if existing:
+            track_status.status = "completed"
+            track_status.quality = "already downloaded"
+            track_status.filename = existing
+            logger.info(f"Skipped (exists): {existing}")
+            return
+
+    queries = _build_search_queries(track_status.artist, track_status.title)
+    track_status.status = "searching"
+
+    try:
+        responses = []
+        for query in queries:
+            logger.info(f"Searching: {query}")
+            search_id = await client.search(query)
+            responses = await client.wait_for_search(search_id)
+            await client.delete_search(search_id)
+            if responses:
+                break
+            # Pause between query attempts to avoid flood
+            await asyncio.sleep(2)
+
+        # Collect all audio files from all responses
+        candidates = []
+        for resp in responses:
+            username = resp.get("username", "")
+            free_upload = resp.get("freeUploadSlots", 0) > 0
+            for f in resp.get("files", []):
+                ext = _get_file_extension(f.get("filename", ""))
+                if ext not in AUDIO_EXTENSIONS:
+                    continue
+                if not _matches_track(
+                    f.get("filename", ""), track_status.artist, track_status.title
+                ):
+                    continue
+                candidates.append({
+                    "username": username,
+                    "free_upload": free_upload,
+                    "file": f,
+                })
+
+        if not candidates:
+            track_status.status = "not_found"
+            logger.info(f"Not found: {track_status.artist} - {track_status.title}")
+            return
+
+        # Sort: free slots first, then by quality score
+        candidates.sort(key=lambda c: (
+            0 if c["free_upload"] else 1,
+            _score_file(c["file"]),
+        ))
+
+        best = candidates[0]
+        track_status.status = "downloading"
+        track_status.quality = _describe_quality(best["file"])
+        track_status.filename = best["file"].get("filename", "").split("\\")[-1]
+        logger.info(
+            f"Downloading: {track_status.filename} from {best['username']} ({track_status.quality})"
+        )
+
+        await client.download_file(best["username"], best["file"])
+        track_status.status = "completed"
+
+        # Record in manifest so we don't re-download next time
+        if track_status.track_id:
+            _record_download(
+                track_status.track_id,
+                track_status.filename,
+                track_status.quality,
+            )
+
+    except Exception as e:
+        track_status.status = "error"
+        track_status.error = str(e)
+
+
 async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
-    """Search and download all tracks from a playlist."""
+    """Search and download all tracks from a playlist.
+
+    Processes tracks in parallel waves of PARALLEL_SEARCHES (default 2)
+    to speed up downloads while avoiding Soulseek flood-kick.
+    """
     global session
 
     session = DownloadSession(
@@ -253,99 +347,31 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
 
     client = SlskdClient()
 
-    for i, track_status in enumerate(session.tracks):
-        if not session.active:
-            break
-
-        # Skip already downloaded tracks (by Spotify track ID)
-        if track_status.track_id:
-            existing = _is_already_downloaded(track_status.track_id)
-            if existing:
-                track_status.status = "completed"
-                track_status.quality = "already downloaded"
-                track_status.filename = existing
-                logger.info(f"Skipped (exists): {existing}")
-                continue
-
-        # Ensure slskd is connected before searching
+    # Process in waves of PARALLEL_SEARCHES
+    pending = [t for t in session.tracks]
+    while pending and session.active:
+        # Ensure slskd is connected before wave
         if not await client.health_check():
             logger.warning("slskd disconnected, waiting 15s for reconnect...")
             await asyncio.sleep(15)
             if not await client.health_check():
-                track_status.status = "error"
-                track_status.error = "slskd disconnected"
-                continue
+                for t in pending:
+                    t.status = "error"
+                    t.error = "slskd disconnected"
+                break
 
-        queries = _build_search_queries(track_status.artist, track_status.title)
-        track_status.status = "searching"
+        # Take next wave (skip already-completed from manifest check)
+        wave = pending[:PARALLEL_SEARCHES]
+        pending = pending[PARALLEL_SEARCHES:]
 
-        try:
-            responses = []
-            for query in queries:
-                logger.info(f"Searching: {query}")
-                search_id = await client.search(query)
-                responses = await client.wait_for_search(search_id)
-                await client.delete_search(search_id)
-                if responses:
-                    break
-                # Pause between query attempts to avoid flood
-                await asyncio.sleep(2)
+        # Run wave in parallel
+        await asyncio.gather(
+            *[_search_and_download_track(client, t) for t in wave]
+        )
 
-            # Collect all audio files from all responses
-            candidates = []
-            for resp in responses:
-                username = resp.get("username", "")
-                free_upload = resp.get("freeUploadSlots", 0) > 0
-                for f in resp.get("files", []):
-                    ext = _get_file_extension(f.get("filename", ""))
-                    if ext not in AUDIO_EXTENSIONS:
-                        continue
-                    if not _matches_track(
-                        f.get("filename", ""), track_status.artist, track_status.title
-                    ):
-                        continue
-                    candidates.append({
-                        "username": username,
-                        "free_upload": free_upload,
-                        "file": f,
-                    })
-
-            if not candidates:
-                track_status.status = "not_found"
-                logger.info(f"Not found: {track_status.artist} - {track_status.title}")
-                continue
-
-            # Sort: free slots first, then by quality score
-            candidates.sort(key=lambda c: (
-                0 if c["free_upload"] else 1,
-                _score_file(c["file"]),
-            ))
-
-            best = candidates[0]
-            track_status.status = "downloading"
-            track_status.quality = _describe_quality(best["file"])
-            track_status.filename = best["file"].get("filename", "").split("\\")[-1]
-            logger.info(
-                f"Downloading: {track_status.filename} from {best['username']} ({track_status.quality})"
-            )
-
-            await client.download_file(best["username"], best["file"])
-            track_status.status = "completed"
-
-            # Record in manifest so we don't re-download next time
-            if track_status.track_id:
-                _record_download(
-                    track_status.track_id,
-                    track_status.filename,
-                    track_status.quality,
-                )
-
-        except Exception as e:
-            track_status.status = "error"
-            track_status.error = str(e)
-
-        # Delay between tracks to avoid Soulseek server flood-kick
-        await asyncio.sleep(5)
+        # Pause between waves to avoid Soulseek flood-kick
+        if pending and session.active:
+            await asyncio.sleep(WAVE_DELAY)
 
     session.active = False
 
