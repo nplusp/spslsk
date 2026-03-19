@@ -567,8 +567,8 @@
                         const active = this.status.tracks?.find(t =>
                             t.status === 'downloading' || t.status === 'searching'
                         );
-                        const name = active ? active.title : '...';
-                        document.title = `(${this.status.completed}/${this.status.total}) ${name} — spslsk`;
+                        const name = active ? `${active.artist} – ${active.title}` : '...';
+                        document.title = `(${this.status.completed}/${this.status.total}) ${name}`;
                     } else {
                         document.title = 'spslsk';
                     }
