@@ -214,6 +214,7 @@
                                             class="text-xs px-2 py-0.5 rounded-full"
                                             :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' :
                                                     track.quality === 'already downloaded' ? 'bg-gray-700 text-gray-400' :
+                                                    track.quality.includes('missing') ? 'bg-yellow-900 text-yellow-300' :
                                                     'bg-gray-700 text-gray-300'"
                                             x-text="track.quality"
                                         ></span>
@@ -290,6 +291,16 @@
 
                     <!-- Files tab -->
                     <div x-show="sidebarTab === 'files'" class="max-h-[calc(100vh-200px)] overflow-y-auto">
+                        <!-- Open folder button — always visible at top -->
+                        <template x-if="downloadedFiles.length > 0">
+                            <div class="p-2 border-b border-gray-800">
+                                <a href="#" @click.prevent="openDownloads"
+                                   class="text-xs text-green-500 hover:text-green-400 flex items-center justify-center gap-1 py-1">
+                                    <span>&#128193;</span>
+                                    <span x-text="folderCopied ? 'Copied!' : 'Open folder'"></span>
+                                </a>
+                            </div>
+                        </template>
                         <template x-if="downloadedFiles.length === 0">
                             <p class="text-gray-600 text-xs p-4 text-center">No files yet</p>
                         </template>
@@ -302,15 +313,6 @@
                                 </div>
                             </template>
                         </div>
-                        <template x-if="downloadedFiles.length > 0">
-                            <div class="p-2 border-t border-gray-800">
-                                <a href="#" @click.prevent="openDownloads"
-                                   class="text-xs text-green-500 hover:text-green-400 flex items-center justify-center gap-1 py-1">
-                                    <span>&#128193;</span>
-                                    <span x-text="folderCopied ? 'Copied!' : 'Open folder'"></span>
-                                </a>
-                            </div>
-                        </template>
                     </div>
                 </div>
             </div>
@@ -385,8 +387,11 @@
                     if (this.playlist) {
                         return this.playlist.tracks.map(t => {
                             const dl = this.downloadedMap[t.id];
-                            if (dl) {
+                            if (dl && dl.exists) {
                                 return {...t, status: 'completed', quality: 'already downloaded', filename: dl.filename};
+                            }
+                            if (dl && !dl.exists) {
+                                return {...t, status: 'pending', quality: 'file missing — will re-download'};
                             }
                             return {...t, status: 'pending', quality: ''};
                         });
@@ -408,7 +413,10 @@
 
                 get currentDownloadedCount() {
                     if (!this.playlist) return 0;
-                    return this.playlist.tracks.filter(t => this.downloadedMap[t.id]).length;
+                    return this.playlist.tracks.filter(t => {
+                        const dl = this.downloadedMap[t.id];
+                        return dl && dl.exists;
+                    }).length;
                 },
 
                 async init() {

@@ -95,12 +95,21 @@ async def list_downloaded_files():
 
 @app.get("/api/manifest")
 async def get_manifest():
-    """Return the entire download manifest for client-side lookups.
+    """Return the download manifest with verified file existence.
 
-    Loaded once on page init, then checked locally in JS — no network
-    request needed per playlist.
+    Each entry includes 'exists' flag — if file was moved/deleted,
+    the track shows as needing re-download.
     """
-    return _load_manifest()
+    from app.downloader import DOWNLOADS_DIR
+    manifest = _load_manifest()
+    verified = {}
+    for track_id, entry in manifest.items():
+        filename = entry.get("filename", "")
+        file_found = any(
+            f.is_file() for f in DOWNLOADS_DIR.rglob(filename)
+        ) if filename else False
+        verified[track_id] = {**entry, "exists": file_found}
+    return verified
 
 
 @app.post("/api/check-downloaded")
