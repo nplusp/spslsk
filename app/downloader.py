@@ -152,28 +152,36 @@ def _clean_query(text: str) -> str:
 
 
 def _build_search_queries(artist: str, title: str) -> list[str]:
-    """Build a list of search queries to try, from most specific to broadest."""
-    queries = []
+    """Build search queries: broad first, then filter results on our side.
 
-    # Clean versions
+    Soulseek matches ALL words against file paths.
+    Strategy: search by artist only (gets many results), then we filter
+    for the specific track on our side.
+    """
     clean_artist = _clean_query(artist)
-    clean_title = _clean_query(title)
-
-    # Use only the first artist if multiple (before comma)
     first_artist = clean_artist.split(",")[0].strip()
 
-    # Query 1: first artist + clean title (best for multi-artist tracks)
-    q1 = f"{first_artist} {clean_title}"
-    queries.append(q1)
+    # Remove apostrophes (Can't -> Cant) — Soulseek doesn't handle them well
+    first_artist = first_artist.replace("'", "")
 
-    # Query 2: full clean artist + clean title (if different)
-    q2 = f"{clean_artist} {clean_title}"
-    if q2 != q1:
-        queries.append(q2)
+    queries = []
+    seen = set()
 
-    # Query 3: just clean title (fallback for obscure artists)
-    if len(clean_title.split()) >= 3:
-        queries.append(clean_title)
+    def _add(q: str):
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            queries.append(q)
+
+    # Query 1: just the artist name (broad, most results)
+    _add(first_artist)
+
+    # Query 2: artist + first significant title word (narrower)
+    filler = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is"}
+    clean_title = _clean_query(title).replace("'", "")
+    title_words = [w for w in clean_title.split() if w.lower() not in filler and len(w) > 2]
+    if title_words:
+        _add(f"{first_artist} {title_words[0]}")
 
     return queries
 
@@ -194,6 +202,15 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
         if not session.active:
             break
 
+        # Ensure slskd is connected before searching
+        if not await client.health_check():
+            logger.warning("slskd disconnected, waiting 15s for reconnect...")
+            await asyncio.sleep(15)
+            if not await client.health_check():
+                track_status.status = "error"
+                track_status.error = "slskd disconnected"
+                continue
+
         queries = _build_search_queries(track_status.artist, track_status.title)
         track_status.status = "searching"
 
@@ -201,11 +218,13 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
             responses = []
             for query in queries:
                 logger.info(f"Searching: {query}")
-                search_id = await client.search(query, search_timeout=30)
-                responses = await client.wait_for_search(search_id, timeout=35)
+                search_id = await client.search(query)
+                responses = await client.wait_for_search(search_id)
                 await client.delete_search(search_id)
                 if responses:
                     break
+                # Pause between query attempts to avoid flood
+                await asyncio.sleep(2)
 
             # Collect all audio files from all responses
             candidates = []
@@ -252,8 +271,8 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
             track_status.status = "error"
             track_status.error = str(e)
 
-        # Small delay between searches to not hammer the network
-        await asyncio.sleep(1)
+        # Delay between tracks to avoid Soulseek server flood-kick
+        await asyncio.sleep(5)
 
     session.active = False
 

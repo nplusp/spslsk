@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 import httpx
 from app.config import SLSKD_URL, SLSKD_API_KEY
 
@@ -20,13 +19,17 @@ class SlskdClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def _post(self, path: str, json: dict | None = None) -> dict | list:
+    async def _post(self, path: str, json: dict | None = None):
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{self.api_url}{path}", headers=self.headers, json=json
             )
             resp.raise_for_status()
-            return resp.json()
+            # Some endpoints return strings (errors) not JSON
+            try:
+                return resp.json()
+            except Exception:
+                return resp.text
 
     async def _delete(self, path: str) -> None:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -36,52 +39,78 @@ class SlskdClient:
             resp.raise_for_status()
 
     async def health_check(self) -> bool:
-        """Check if slskd is reachable and connected to Soulseek."""
+        """Check if slskd is reachable AND connected+logged in to Soulseek."""
         try:
-            data = await self._get("/application")
-            return True
+            data = await self._get("/server")
+            return data.get("isConnected", False) and data.get("isLoggedIn", False)
         except Exception:
             return False
 
-    async def search(self, query: str, search_timeout: int = 15) -> str:
+    async def search(self, query: str) -> str:
         """Start a search and return the search ID."""
-        search_id = str(uuid.uuid4())
-        await self._post("/searches", json={
-            "id": search_id,
+        result = await self._post("/searches", json={
             "searchText": query,
-            "searchTimeout": search_timeout,
         })
-        return search_id
+
+        # If POST returns the search object directly
+        if isinstance(result, dict) and "id" in result:
+            return result["id"]
+
+        # If POST returned an error string, the server might be disconnected
+        if isinstance(result, str):
+            raise RuntimeError(f"Search failed: {result}")
+
+        # Fallback: find the search in the list
+        searches = await self._get("/searches")
+        if isinstance(searches, list):
+            for s in searches:
+                if s.get("searchText") == query:
+                    return s["id"]
+            if searches:
+                return searches[-1]["id"]
+
+        raise RuntimeError("Search was not created")
 
     async def get_search_results(self, search_id: str) -> dict:
         """Get results for a search by ID."""
         return await self._get(f"/searches/{search_id}")
 
     async def wait_for_search(
-        self, search_id: str, timeout: int = 20, poll_interval: float = 2
+        self, search_id: str, timeout: int = 30, poll_interval: float = 5
     ) -> list:
-        """Wait for search to complete and return responses."""
+        """Wait for search to complete and return responses.
+
+        Uses longer poll intervals to avoid hammering slskd.
+        """
         elapsed = 0
         while elapsed < timeout:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
-            data = await self.get_search_results(search_id)
-            state = data.get("state", "")
-            # Completed states: "Completed, ResponsesReceived" or similar
-            if "Completed" in state:
-                return data.get("responses", [])
+            try:
+                data = await self.get_search_results(search_id)
+            except Exception:
+                continue
 
-        # Return whatever we have after timeout
-        data = await self.get_search_results(search_id)
-        return data.get("responses", [])
+            state = data.get("state", "")
+            responses = data.get("responses", [])
+
+            # If we got results, return them
+            if responses:
+                return responses
+
+            # If completed with no results, no point waiting
+            if "Completed" in state:
+                return []
+
+        # Final check
+        try:
+            data = await self.get_search_results(search_id)
+            return data.get("responses", [])
+        except Exception:
+            return []
 
     async def download_file(self, username: str, file_info: dict) -> dict:
-        """Enqueue a file for download.
-
-        file_info should contain at minimum:
-        - filename: full remote path
-        - size: file size in bytes
-        """
+        """Enqueue a file for download."""
         return await self._post(
             f"/transfers/downloads/{username}",
             json=[file_info],
