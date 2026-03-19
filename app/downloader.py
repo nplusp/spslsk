@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 import logging
@@ -7,6 +8,7 @@ from dataclasses import dataclass, field
 from app.slskd_client import SlskdClient
 
 DOWNLOADS_DIR = Path("/app/downloads")
+MANIFEST_FILE = DOWNLOADS_DIR / ".manifest.json"
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ FORMAT_PRIORITY = {
 class TrackStatus:
     artist: str
     title: str
+    track_id: str = ""  # Spotify track ID for dedup
     status: str = "pending"  # pending, searching, found, downloading, completed, not_found, error
     quality: str = ""
     filename: str = ""
@@ -126,31 +129,44 @@ def _describe_quality(file_info: dict) -> str:
         return f"{label} {bitrate}kbps" if bitrate else label
 
 
-def _is_already_downloaded(artist: str, title: str) -> str | None:
-    """Check if a track is already in the downloads folder.
+def _load_manifest() -> dict:
+    """Load download manifest mapping Spotify track IDs to filenames."""
+    if MANIFEST_FILE.exists():
+        try:
+            return json.loads(MANIFEST_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_manifest(manifest: dict) -> None:
+    """Save download manifest to disk."""
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    MANIFEST_FILE.write_text(json.dumps(manifest, indent=2))
+
+
+def _record_download(track_id: str, filename: str, quality: str) -> None:
+    """Record a successful download in the manifest."""
+    manifest = _load_manifest()
+    manifest[track_id] = {"filename": filename, "quality": quality}
+    _save_manifest(manifest)
+
+
+def _is_already_downloaded(track_id: str) -> str | None:
+    """Check if a track was already downloaded using the manifest.
 
     Returns the filename if found, None otherwise.
     """
-    if not DOWNLOADS_DIR.exists():
-        return None
-
-    clean_title = _clean_query(title).lower()
-    clean_artist = _clean_query(artist).lower().split(",")[0].strip()
-    filler = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is"}
-    title_words = [w for w in clean_title.split() if w not in filler and len(w) > 2]
-
-    for f in DOWNLOADS_DIR.rglob("*"):
-        if not f.is_file():
-            continue
-        ext = f.suffix.lower()
-        if ext not in AUDIO_EXTENSIONS:
-            continue
-        fname = f.stem.lower()
-        # Check if artist and at least one title word appear in filename
-        artist_match = any(w in fname for w in clean_artist.split() if len(w) > 2)
-        title_match = any(w in fname for w in title_words) if title_words else True
-        if artist_match and title_match:
-            return f.name
+    manifest = _load_manifest()
+    entry = manifest.get(track_id)
+    if entry:
+        # Verify file still exists on disk
+        for f in DOWNLOADS_DIR.rglob(entry["filename"]):
+            if f.is_file():
+                return entry["filename"]
+        # File gone from disk — remove stale entry
+        del manifest[track_id]
+        _save_manifest(manifest)
     return None
 
 
@@ -224,7 +240,14 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
 
     session = DownloadSession(
         playlist_name=playlist_name,
-        tracks=[TrackStatus(artist=t["artist"], title=t["title"]) for t in tracks],
+        tracks=[
+            TrackStatus(
+                artist=t["artist"],
+                title=t["title"],
+                track_id=t.get("id", ""),
+            )
+            for t in tracks
+        ],
         active=True,
     )
 
@@ -234,14 +257,15 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
         if not session.active:
             break
 
-        # Skip already downloaded tracks
-        existing = _is_already_downloaded(track_status.artist, track_status.title)
-        if existing:
-            track_status.status = "completed"
-            track_status.quality = "already downloaded"
-            track_status.filename = existing
-            logger.info(f"Skipped (exists): {existing}")
-            continue
+        # Skip already downloaded tracks (by Spotify track ID)
+        if track_status.track_id:
+            existing = _is_already_downloaded(track_status.track_id)
+            if existing:
+                track_status.status = "completed"
+                track_status.quality = "already downloaded"
+                track_status.filename = existing
+                logger.info(f"Skipped (exists): {existing}")
+                continue
 
         # Ensure slskd is connected before searching
         if not await client.health_check():
@@ -307,6 +331,14 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
 
             await client.download_file(best["username"], best["file"])
             track_status.status = "completed"
+
+            # Record in manifest so we don't re-download next time
+            if track_status.track_id:
+                _record_download(
+                    track_status.track_id,
+                    track_status.filename,
+                    track_status.quality,
+                )
 
         except Exception as e:
             track_status.status = "error"

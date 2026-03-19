@@ -196,7 +196,8 @@
                         <span class="text-xs text-gray-500" x-text="downloadedFiles.length + ' files'"></span>
                         <a href="#" @click.prevent="openDownloads"
                            class="text-xs text-green-500 hover:text-green-400 flex items-center gap-1">
-                            <span>&#128193;</span> Open folder
+                            <span>&#128193;</span>
+                            <span x-text="folderCopied ? 'Copied! Run in terminal' : 'Copy open command'"></span>
                         </a>
                     </div>
                 </div>
@@ -225,6 +226,7 @@
                 slskdOk: false,
                 pollInterval: null,
                 downloadedFiles: [],
+                folderCopied: false,
 
                 get displayTracks() {
                     if (this.status && this.status.tracks) {
@@ -364,8 +366,14 @@
                     }
                 },
 
-                async openDownloads() {
-                    try { await fetch('/api/open-downloads', {method: 'POST'}); } catch {}
+                openDownloads() {
+                    const path = window.location.origin.replace(/:\d+$/, '')
+                        ? '~/lib/spotasoul/downloads/'
+                        : './downloads/';
+                    navigator.clipboard.writeText('open ./downloads/').then(() => {
+                        this.folderCopied = true;
+                        setTimeout(() => this.folderCopied = false, 2000);
+                    });
                 },
             };
         }

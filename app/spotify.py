@@ -58,6 +58,7 @@ def get_playlist_tracks(playlist_url: str) -> dict:
 
             artists = ", ".join(a["name"] for a in track["artists"])
             tracks.append({
+                "id": track.get("id", ""),
                 "artist": artists,
                 "title": track["name"],
                 "album": track.get("album", {}).get("name", ""),
