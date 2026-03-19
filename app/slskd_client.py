@@ -110,11 +110,36 @@ class SlskdClient:
             return []
 
     async def download_file(self, username: str, file_info: dict) -> dict:
-        """Enqueue a file for download."""
-        return await self._post(
+        """Enqueue a file for download and wait for completion."""
+        result = await self._post(
             f"/transfers/downloads/{username}",
             json=[file_info],
         )
+
+        # Wait for the download to actually complete (poll transfers)
+        filename = file_info.get("filename", "").split("\\")[-1]
+        for _ in range(120):  # Max 10 minutes (120 * 5s)
+            await asyncio.sleep(5)
+            try:
+                downloads = await self._get(f"/transfers/downloads/{username}")
+                if isinstance(downloads, dict):
+                    dirs = downloads.get("directories", [])
+                    for d in dirs:
+                        for f in d.get("files", []):
+                            fname = f.get("filename", "").split("\\")[-1]
+                            if fname == filename:
+                                state = f.get("state", "")
+                                # Completed states in slskd
+                                if "Completed" in state and "Succeeded" in state:
+                                    return result
+                                if "Errored" in state or "Cancelled" in state or "Rejected" in state:
+                                    raise RuntimeError(f"Download failed: {state}")
+            except RuntimeError:
+                raise
+            except Exception:
+                continue
+
+        return result
 
     async def get_all_downloads(self) -> list:
         """Get all current downloads."""

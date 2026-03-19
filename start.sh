@@ -60,9 +60,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     body = json.loads(self.rfile.read(length))
                     sub = body.get('subfolder', '')
                     if sub:
-                        import re
-                        safe = re.sub(r'[<>:\"/\\\\|?*]', '', sub).strip()[:100]
-                        candidate = os.path.join(folder, safe)
+                        # Try exact match first, then sanitized
+                        candidate = os.path.join(folder, sub)
+                        if not os.path.isdir(candidate):
+                            safe = sub.replace('/', '').replace('..', '')[:100]
+                            candidate = os.path.join(folder, safe)
                         if os.path.isdir(candidate):
                             folder = candidate
             except Exception:

@@ -351,9 +351,8 @@ async def _search_and_download_track(
         await client.download_file(best["username"], best["file"])
         track_status.status = "completed"
 
-        # Move file into playlist subfolder
+        # Move file into playlist subfolder (download_file now waits for completion)
         if playlist_name:
-            await asyncio.sleep(1)
             _move_to_playlist_folder(track_status.filename, playlist_name)
 
         # Record in manifest so we don't re-download next time
