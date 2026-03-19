@@ -43,6 +43,10 @@
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%; display: inline-block;
         }
+        .collapse-transition {
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            overflow: hidden;
+        }
     </style>
 </head>
 <body class="text-white min-h-screen" x-data="app()" x-cloak>
@@ -85,7 +89,7 @@
             <p x-show="error" class="text-red-400 text-sm mt-2" x-text="error"></p>
         </div>
 
-        <!-- Playlist info -->
+        <!-- Current playlist -->
         <template x-if="playlist">
             <div class="card rounded-xl p-6 mb-6">
                 <div class="flex items-center gap-4 mb-4">
@@ -98,6 +102,11 @@
                         <h2 class="text-lg font-semibold" x-text="playlist.name"></h2>
                         <p class="text-gray-500 text-sm">
                             <span x-text="playlist.total"></span> tracks
+                            <template x-if="currentDownloadedCount > 0">
+                                <span class="text-green-500">
+                                    &middot; <span x-text="currentDownloadedCount"></span> downloaded
+                                </span>
+                            </template>
                         </p>
                     </div>
                     <div class="ml-auto">
@@ -177,9 +186,75 @@
                             <div x-show="track.quality" class="flex-shrink-0">
                                 <span
                                     class="text-xs px-2 py-0.5 rounded-full"
-                                    :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-300'"
+                                    :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' :
+                                            track.quality === 'already downloaded' ? 'bg-gray-700 text-gray-400' :
+                                            'bg-gray-700 text-gray-300'"
                                     x-text="track.quality"
                                 ></span>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+
+        <!-- Playlist history -->
+        <template x-if="history.length > 0">
+            <div class="mb-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-gray-400">Previous Playlists</h3>
+                    <button
+                        @click="clearHistory"
+                        class="text-xs text-gray-600 hover:text-gray-400"
+                    >Clear</button>
+                </div>
+                <div class="space-y-2">
+                    <template x-for="(item, idx) in history" :key="item.url">
+                        <div class="card rounded-xl overflow-hidden">
+                            <!-- Collapsed header (always visible) -->
+                            <div
+                                class="flex items-center gap-3 p-4 cursor-pointer hover:bg-white/5"
+                                @click="toggleHistory(idx)"
+                            >
+                                <img
+                                    x-show="item.playlist.image"
+                                    :src="item.playlist.image"
+                                    class="w-10 h-10 rounded object-cover"
+                                >
+                                <div class="flex-1 min-w-0">
+                                    <p class="text-sm font-medium truncate" x-text="item.playlist.name"></p>
+                                    <p class="text-xs text-gray-500">
+                                        <span x-text="item.playlist.total"></span> tracks
+                                        &middot;
+                                        <span x-text="timeAgo(item.ts)"></span>
+                                    </p>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button
+                                        @click.stop="loadFromHistory(item)"
+                                        class="text-xs text-green-500 hover:text-green-400 px-2 py-1"
+                                    >Load</button>
+                                    <span
+                                        class="text-gray-500 text-xs transition-transform"
+                                        :class="expandedHistory === idx ? 'rotate-180' : ''"
+                                    >&#9660;</span>
+                                </div>
+                            </div>
+
+                            <!-- Expanded track list -->
+                            <div
+                                x-show="expandedHistory === idx"
+                                x-transition
+                                class="border-t border-gray-800 px-4 pb-3"
+                            >
+                                <div class="space-y-0.5 max-h-48 overflow-y-auto pt-2">
+                                    <template x-for="track in item.playlist.tracks" :key="track.id || track.title">
+                                        <div class="flex items-center gap-2 py-1 text-xs text-gray-400">
+                                            <span class="text-gray-600">&#9835;</span>
+                                            <span class="truncate" x-text="track.title + ' — ' + track.artist"></span>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
                         </div>
                     </template>
@@ -227,6 +302,8 @@
                 pollInterval: null,
                 downloadedFiles: [],
                 folderCopied: false,
+                history: [],
+                expandedHistory: null,
 
                 // Map of track_id -> {filename, quality} for already downloaded tracks
                 downloadedMap: {},
@@ -247,9 +324,15 @@
                     return [];
                 },
 
+                get currentDownloadedCount() {
+                    if (!this.playlist) return 0;
+                    return this.playlist.tracks.filter(t => this.downloadedMap[t.id]).length;
+                },
+
                 async init() {
                     await this.checkHealth();
                     await this.loadFiles();
+                    this.loadHistory();
 
                     // Restore last playlist from localStorage
                     const cached = localStorage.getItem('spotaslsk_last');
@@ -275,6 +358,58 @@
                         }
                     } catch {}
                 },
+
+                // --- History management ---
+
+                loadHistory() {
+                    try {
+                        this.history = JSON.parse(localStorage.getItem('spotaslsk_history') || '[]');
+                    } catch { this.history = []; }
+                },
+
+                saveToHistory(url, playlist) {
+                    // Remove duplicate if exists
+                    this.history = this.history.filter(h => h.url !== url);
+                    // Add to front (most recent first), keep max 20
+                    this.history.unshift({ url, playlist, ts: Date.now() });
+                    if (this.history.length > 20) this.history = this.history.slice(0, 20);
+                    localStorage.setItem('spotaslsk_history', JSON.stringify(this.history));
+                },
+
+                toggleHistory(idx) {
+                    this.expandedHistory = this.expandedHistory === idx ? null : idx;
+                },
+
+                loadFromHistory(item) {
+                    this.playlistUrl = item.url;
+                    this.playlist = item.playlist;
+                    this.status = null;
+                    // Save as current
+                    localStorage.setItem('spotaslsk_last', JSON.stringify({
+                        url: item.url,
+                        playlist: item.playlist,
+                        ts: Date.now(),
+                    }));
+                    this.checkDownloaded();
+                },
+
+                clearHistory() {
+                    this.history = [];
+                    localStorage.removeItem('spotaslsk_history');
+                },
+
+                timeAgo(ts) {
+                    const diff = Date.now() - ts;
+                    const mins = Math.floor(diff / 60000);
+                    if (mins < 1) return 'just now';
+                    if (mins < 60) return mins + 'm ago';
+                    const hours = Math.floor(mins / 60);
+                    if (hours < 24) return hours + 'h ago';
+                    const days = Math.floor(hours / 24);
+                    return days + 'd ago';
+                },
+
+                // --- Core functionality ---
 
                 async checkDownloaded() {
                     if (!this.playlist || !this.playlist.tracks) return;
@@ -312,8 +447,22 @@
                     if (!this.playlistUrl) return;
                     this.loading = true;
                     this.error = '';
-                    this.playlist = null;
                     this.status = null;
+
+                    // Save current playlist to history before loading new one
+                    if (this.playlist && this.playlistUrl) {
+                        const currentUrl = localStorage.getItem('spotaslsk_last');
+                        if (currentUrl) {
+                            try {
+                                const prev = JSON.parse(currentUrl);
+                                if (prev.playlist && prev.url !== this.playlistUrl) {
+                                    this.saveToHistory(prev.url, prev.playlist);
+                                }
+                            } catch {}
+                        }
+                    }
+
+                    this.playlist = null;
 
                     try {
                         const resp = await fetch('/api/playlist', {
@@ -332,6 +481,8 @@
                             playlist: this.playlist,
                             ts: Date.now(),
                         }));
+                        // Also save to history
+                        this.saveToHistory(this.playlistUrl, this.playlist);
                         await this.checkDownloaded();
                     } catch (e) {
                         this.error = e.message;
