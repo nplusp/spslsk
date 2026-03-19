@@ -445,6 +445,15 @@
 
                 async fetchPlaylist() {
                     if (!this.playlistUrl) return;
+
+                    // Warn if download is active
+                    if (this.downloading) {
+                        if (!confirm('Download is in progress. Stop it and load new playlist?')) {
+                            return;
+                        }
+                        await this.stopDownload();
+                    }
+
                     this.loading = true;
                     this.error = '';
                     this.status = null;
