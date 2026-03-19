@@ -72,8 +72,8 @@ class SlskdClient:
         raise RuntimeError("Search was not created")
 
     async def get_search_results(self, search_id: str) -> dict:
-        """Get results for a search by ID."""
-        return await self._get(f"/searches/{search_id}")
+        """Get results for a search by ID, including response data."""
+        return await self._get(f"/searches/{search_id}?includeResponses=true")
 
     async def wait_for_search(
         self, search_id: str, timeout: int = 30, poll_interval: float = 5
