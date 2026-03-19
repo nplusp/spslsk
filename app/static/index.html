@@ -186,6 +186,26 @@
                 </div>
             </div>
         </template>
+
+        <!-- Downloaded files -->
+        <template x-if="downloadedFiles.length > 0">
+            <div class="card rounded-xl p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-sm font-semibold text-gray-400">Downloaded Files</h3>
+                    <span class="text-xs text-gray-500" x-text="downloadedFiles.length + ' files'"></span>
+                </div>
+                <div class="space-y-1 max-h-48 overflow-y-auto">
+                    <template x-for="file in downloadedFiles" :key="file.path">
+                        <div class="flex items-center gap-3 py-1.5 px-3 text-sm text-gray-300">
+                            <span class="text-green-500 text-xs">&#9835;</span>
+                            <span class="flex-1 truncate" x-text="file.name"></span>
+                            <span class="text-gray-600 text-xs" x-text="file.size_mb + ' MB'"></span>
+                        </div>
+                    </template>
+                </div>
+                <p class="text-xs text-gray-600 mt-3">Files are in ./downloads/ folder</p>
+            </div>
+        </template>
     </div>
 
     <script>
@@ -199,6 +219,7 @@
                 status: null,
                 slskdOk: false,
                 pollInterval: null,
+                downloadedFiles: [],
 
                 get displayTracks() {
                     if (this.status && this.status.tracks) {
@@ -212,6 +233,38 @@
 
                 async init() {
                     await this.checkHealth();
+                    await this.loadFiles();
+
+                    // Restore last playlist from localStorage
+                    const cached = localStorage.getItem('spotaslsk_last');
+                    if (cached) {
+                        try {
+                            const data = JSON.parse(cached);
+                            this.playlistUrl = data.url || '';
+                            this.playlist = data.playlist || null;
+                        } catch {}
+                    }
+
+                    // Check if there's an active download session
+                    try {
+                        const resp = await fetch('/api/status');
+                        const st = await resp.json();
+                        if (st.total > 0) {
+                            this.status = st;
+                            if (st.active) {
+                                this.downloading = true;
+                                this.startPolling();
+                            }
+                        }
+                    } catch {}
+                },
+
+                async loadFiles() {
+                    try {
+                        const resp = await fetch('/api/files');
+                        const data = await resp.json();
+                        this.downloadedFiles = data.files || [];
+                    } catch {}
                 },
 
                 async checkHealth() {
@@ -242,6 +295,12 @@
                             throw new Error(err.detail || 'Failed to load playlist');
                         }
                         this.playlist = await resp.json();
+                        // Cache in localStorage
+                        localStorage.setItem('spotaslsk_last', JSON.stringify({
+                            url: this.playlistUrl,
+                            playlist: this.playlist,
+                            ts: Date.now(),
+                        }));
                     } catch (e) {
                         this.error = e.message;
                     } finally {
@@ -278,6 +337,7 @@
                             if (!this.status.active) {
                                 this.downloading = false;
                                 this.stopPolling();
+                                await this.loadFiles();
                             }
                         } catch {}
                     }, 1500);

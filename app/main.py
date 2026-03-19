@@ -1,4 +1,6 @@
 import asyncio
+import os
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -69,6 +71,22 @@ async def stop_download():
     """Stop the current download session."""
     stop_session()
     return {"message": "Stopped"}
+
+
+@app.get("/api/files")
+async def list_downloaded_files():
+    """List all downloaded files."""
+    downloads_dir = Path("/app/downloads")
+    files = []
+    if downloads_dir.exists():
+        for f in sorted(downloads_dir.rglob("*")):
+            if f.is_file() and not f.name.startswith("."):
+                files.append({
+                    "name": f.name,
+                    "path": str(f.relative_to(downloads_dir)),
+                    "size_mb": round(f.stat().st_size / 1024 / 1024, 1),
+                })
+    return {"files": files, "total": len(files)}
 
 
 # Serve static files (CSS, JS if needed)
