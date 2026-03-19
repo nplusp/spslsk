@@ -1,4 +1,4 @@
-# SpotaSlsk
+# spslsk
 
 Download entire Spotify playlists via Soulseek. Automatically finds the best quality available (FLAC preferred).
 

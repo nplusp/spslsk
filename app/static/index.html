@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpotaSlsk</title>
+    <title>spslsk</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <style>
@@ -55,7 +55,7 @@
         <!-- Header -->
         <div class="text-center mb-10">
             <h1 class="text-4xl font-bold mb-2">
-                <span class="gradient-text">SpotaSlsk</span>
+                <span class="gradient-text">spslsk</span>
             </h1>
             <p class="text-gray-500 text-sm">Spotify playlist &rarr; Soulseek download</p>
         </div>
@@ -335,7 +335,7 @@
                     this.loadHistory();
 
                     // Restore last playlist from localStorage
-                    const cached = localStorage.getItem('spotaslsk_last');
+                    const cached = localStorage.getItem('spslsk_last');
                     if (cached) {
                         try {
                             const data = JSON.parse(cached);
@@ -363,7 +363,7 @@
 
                 loadHistory() {
                     try {
-                        this.history = JSON.parse(localStorage.getItem('spotaslsk_history') || '[]');
+                        this.history = JSON.parse(localStorage.getItem('spslsk_history') || '[]');
                     } catch { this.history = []; }
                 },
 
@@ -373,7 +373,7 @@
                     // Add to front (most recent first), keep max 20
                     this.history.unshift({ url, playlist, ts: Date.now() });
                     if (this.history.length > 20) this.history = this.history.slice(0, 20);
-                    localStorage.setItem('spotaslsk_history', JSON.stringify(this.history));
+                    localStorage.setItem('spslsk_history', JSON.stringify(this.history));
                 },
 
                 toggleHistory(idx) {
@@ -385,7 +385,7 @@
                     this.playlist = item.playlist;
                     this.status = null;
                     // Save as current
-                    localStorage.setItem('spotaslsk_last', JSON.stringify({
+                    localStorage.setItem('spslsk_last', JSON.stringify({
                         url: item.url,
                         playlist: item.playlist,
                         ts: Date.now(),
@@ -395,7 +395,7 @@
 
                 clearHistory() {
                     this.history = [];
-                    localStorage.removeItem('spotaslsk_history');
+                    localStorage.removeItem('spslsk_history');
                 },
 
                 timeAgo(ts) {
@@ -460,7 +460,7 @@
 
                     // Save current playlist to history before loading new one
                     if (this.playlist && this.playlistUrl) {
-                        const currentUrl = localStorage.getItem('spotaslsk_last');
+                        const currentUrl = localStorage.getItem('spslsk_last');
                         if (currentUrl) {
                             try {
                                 const prev = JSON.parse(currentUrl);
@@ -485,7 +485,7 @@
                         }
                         this.playlist = await resp.json();
                         // Cache in localStorage
-                        localStorage.setItem('spotaslsk_last', JSON.stringify({
+                        localStorage.setItem('spslsk_last', JSON.stringify({
                             url: this.playlistUrl,
                             playlist: this.playlist,
                             ts: Date.now(),
