@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpotaSlsk</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        body { background: #0a0a0a; }
+        .gradient-text {
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .card {
+            background: #141414;
+            border: 1px solid #222;
+        }
+        .input-dark {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: #fff;
+        }
+        .input-dark:focus {
+            border-color: #1DB954;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(29, 185, 84, 0.2);
+        }
+        .btn-green {
+            background: #1DB954;
+            color: #000;
+            font-weight: 600;
+        }
+        .btn-green:hover { background: #1ed760; }
+        .btn-green:disabled { opacity: 0.4; cursor: not-allowed; }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+        }
+    </style>
+</head>
+<body class="text-white min-h-screen" x-data="app()" x-cloak>
+
+    <div class="max-w-2xl mx-auto px-4 py-12">
+        <!-- Header -->
+        <div class="text-center mb-10">
+            <h1 class="text-4xl font-bold mb-2">
+                <span class="gradient-text">SpotaSlsk</span>
+            </h1>
+            <p class="text-gray-500 text-sm">Spotify playlist &rarr; Soulseek download</p>
+        </div>
+
+        <!-- Connection status -->
+        <div class="flex items-center justify-center gap-2 mb-8 text-sm">
+            <span class="status-dot" :class="slskdOk ? 'bg-green-500' : 'bg-red-500'"></span>
+            <span class="text-gray-400" x-text="slskdOk ? 'slskd connected' : 'slskd not reachable'"></span>
+        </div>
+
+        <!-- Input -->
+        <div class="card rounded-xl p-6 mb-6">
+            <label class="block text-gray-400 text-sm mb-2">Spotify Playlist URL</label>
+            <div class="flex gap-3">
+                <input
+                    type="text"
+                    x-model="playlistUrl"
+                    placeholder="https://open.spotify.com/playlist/..."
+                    class="input-dark flex-1 rounded-lg px-4 py-3 text-sm"
+                    @keydown.enter="fetchPlaylist"
+                >
+                <button
+                    class="btn-green rounded-lg px-6 py-3 text-sm"
+                    :disabled="loading || !playlistUrl"
+                    @click="fetchPlaylist"
+                >
+                    <span x-show="!loading">Load</span>
+                    <span x-show="loading" class="pulse">...</span>
+                </button>
+            </div>
+            <p x-show="error" class="text-red-400 text-sm mt-2" x-text="error"></p>
+        </div>
+
+        <!-- Playlist info -->
+        <template x-if="playlist">
+            <div class="card rounded-xl p-6 mb-6">
+                <div class="flex items-center gap-4 mb-4">
+                    <img
+                        x-show="playlist.image"
+                        :src="playlist.image"
+                        class="w-16 h-16 rounded-lg object-cover"
+                    >
+                    <div>
+                        <h2 class="text-lg font-semibold" x-text="playlist.name"></h2>
+                        <p class="text-gray-500 text-sm">
+                            <span x-text="playlist.total"></span> tracks
+                        </p>
+                    </div>
+                    <div class="ml-auto">
+                        <button
+                            x-show="!downloading"
+                            class="btn-green rounded-lg px-6 py-2 text-sm"
+                            @click="startDownload"
+                        >
+                            Download All
+                        </button>
+                        <button
+                            x-show="downloading"
+                            class="rounded-lg px-6 py-2 text-sm bg-red-600 hover:bg-red-500 font-semibold"
+                            @click="stopDownload"
+                        >
+                            Stop
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Progress bar -->
+                <template x-if="status && status.total > 0">
+                    <div class="mb-4">
+                        <div class="flex justify-between text-xs text-gray-500 mb-1">
+                            <span>
+                                <span x-text="status.completed"></span>/<span x-text="status.total"></span> done
+                            </span>
+                            <span x-show="status.not_found > 0" class="text-yellow-500">
+                                <span x-text="status.not_found"></span> not found
+                            </span>
+                        </div>
+                        <div class="w-full bg-gray-800 rounded-full h-1.5">
+                            <div
+                                class="bg-green-500 h-1.5 rounded-full transition-all duration-500"
+                                :style="`width: ${((status.completed + status.not_found + status.errors) / status.total) * 100}%`"
+                            ></div>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Track list -->
+                <div class="space-y-1 max-h-96 overflow-y-auto">
+                    <template x-for="(track, idx) in displayTracks" :key="idx">
+                        <div class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-white/5 text-sm">
+                            <!-- Status icon -->
+                            <div class="w-5 flex-shrink-0 text-center">
+                                <template x-if="track.status === 'pending'">
+                                    <span class="text-gray-600">&#9679;</span>
+                                </template>
+                                <template x-if="track.status === 'searching'">
+                                    <span class="text-yellow-400 pulse">&#8987;</span>
+                                </template>
+                                <template x-if="track.status === 'downloading'">
+                                    <span class="text-blue-400 pulse">&darr;</span>
+                                </template>
+                                <template x-if="track.status === 'completed'">
+                                    <span class="text-green-500">&#10003;</span>
+                                </template>
+                                <template x-if="track.status === 'not_found'">
+                                    <span class="text-yellow-500">?</span>
+                                </template>
+                                <template x-if="track.status === 'error'">
+                                    <span class="text-red-500">!</span>
+                                </template>
+                            </div>
+
+                            <!-- Track info -->
+                            <div class="flex-1 min-w-0">
+                                <div class="truncate">
+                                    <span class="text-white" x-text="track.title"></span>
+                                    <span class="text-gray-500"> &mdash; </span>
+                                    <span class="text-gray-400" x-text="track.artist"></span>
+                                </div>
+                            </div>
+
+                            <!-- Quality badge -->
+                            <div x-show="track.quality" class="flex-shrink-0">
+                                <span
+                                    class="text-xs px-2 py-0.5 rounded-full"
+                                    :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-300'"
+                                    x-text="track.quality"
+                                ></span>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <script>
+        function app() {
+            return {
+                playlistUrl: '',
+                playlist: null,
+                loading: false,
+                error: '',
+                downloading: false,
+                status: null,
+                slskdOk: false,
+                pollInterval: null,
+
+                get displayTracks() {
+                    if (this.status && this.status.tracks) {
+                        return this.status.tracks;
+                    }
+                    if (this.playlist) {
+                        return this.playlist.tracks.map(t => ({...t, status: 'pending', quality: ''}));
+                    }
+                    return [];
+                },
+
+                async init() {
+                    await this.checkHealth();
+                },
+
+                async checkHealth() {
+                    try {
+                        const resp = await fetch('/api/health');
+                        const data = await resp.json();
+                        this.slskdOk = data.slskd;
+                    } catch {
+                        this.slskdOk = false;
+                    }
+                },
+
+                async fetchPlaylist() {
+                    if (!this.playlistUrl) return;
+                    this.loading = true;
+                    this.error = '';
+                    this.playlist = null;
+                    this.status = null;
+
+                    try {
+                        const resp = await fetch('/api/playlist', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({url: this.playlistUrl}),
+                        });
+                        if (!resp.ok) {
+                            const err = await resp.json();
+                            throw new Error(err.detail || 'Failed to load playlist');
+                        }
+                        this.playlist = await resp.json();
+                    } catch (e) {
+                        this.error = e.message;
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async startDownload() {
+                    this.downloading = true;
+                    try {
+                        await fetch('/api/download', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({url: this.playlistUrl}),
+                        });
+                        this.startPolling();
+                    } catch (e) {
+                        this.error = e.message;
+                        this.downloading = false;
+                    }
+                },
+
+                async stopDownload() {
+                    await fetch('/api/stop', {method: 'POST'});
+                    this.downloading = false;
+                    this.stopPolling();
+                },
+
+                startPolling() {
+                    this.pollInterval = setInterval(async () => {
+                        try {
+                            const resp = await fetch('/api/status');
+                            this.status = await resp.json();
+                            if (!this.status.active) {
+                                this.downloading = false;
+                                this.stopPolling();
+                            }
+                        } catch {}
+                    }, 1500);
+                },
+
+                stopPolling() {
+                    if (this.pollInterval) {
+                        clearInterval(this.pollInterval);
+                        this.pollInterval = null;
+                    }
+                },
+            };
+        }
+    </script>
+</body>
+</html>

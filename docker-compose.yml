@@ -1,0 +1,36 @@
+services:
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    ports:
+      - "5030:5030"
+      - "50300:50300"
+    environment:
+      - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME}
+      - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD}
+      - SLSKD_REMOTE_CONFIGURATION=true
+      - SLSKD_WEB_AUTHENTICATION__API_KEYS__SPOTASOUL__KEY=${SLSKD_API_KEY}
+      - SLSKD_SHARED_DIR=/shared;/music
+    volumes:
+      - ./slskd-data:/app
+      - ./downloads:/app/downloads
+      - ./shared:/shared
+      - /Users/mikita/Music:/music
+    restart: unless-stopped
+
+  backend:
+    build: .
+    container_name: spotify-slsk-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - SLSKD_API_KEY=${SLSKD_API_KEY}
+      - SLSKD_URL=http://slskd:5030
+    volumes:
+      - ./downloads:/app/downloads
+      - ./app:/app/app
+    depends_on:
+      - slskd
+    restart: unless-stopped
