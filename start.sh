@@ -52,7 +52,21 @@ import http.server, subprocess, json, os
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/open-folder':
-            folder = os.path.join(os.path.dirname(os.path.abspath('$0')), 'downloads')
+            folder = os.path.join(os.getcwd(), 'downloads')
+            # Check for subfolder in request body
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                if length > 0:
+                    body = json.loads(self.rfile.read(length))
+                    sub = body.get('subfolder', '')
+                    if sub:
+                        import re
+                        safe = re.sub(r'[<>:\"/\\\\|?*]', '', sub).strip()[:100]
+                        candidate = os.path.join(folder, safe)
+                        if os.path.isdir(candidate):
+                            folder = candidate
+            except Exception:
+                pass
             os.makedirs(folder, exist_ok=True)
             subprocess.Popen(['open', folder])
             self.send_response(200)

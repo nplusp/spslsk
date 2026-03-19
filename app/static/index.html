@@ -275,6 +275,11 @@
                                                 &middot; <span x-text="timeAgo(item.ts)"></span>
                                             </p>
                                         </div>
+                                        <a href="#" @click.stop.prevent="openPlaylistFolder(item.playlist.name)"
+                                           class="text-gray-600 hover:text-green-500 flex-shrink-0 p-1"
+                                           title="Open folder">
+                                            <span class="text-xs">&#128193;</span>
+                                        </a>
                                     </div>
                                 </div>
                             </template>
@@ -656,6 +661,16 @@
                             setTimeout(() => this.folderCopied = false, 2000);
                         });
                     }
+                },
+
+                async openPlaylistFolder(name) {
+                    try {
+                        await fetch('http://localhost:8001/open-folder', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({subfolder: name}),
+                        });
+                    } catch {}
                 },
             };
         }
