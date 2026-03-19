@@ -562,12 +562,25 @@
                     this.stopPolling();
                 },
 
+                updateTitle() {
+                    if (this.downloading && this.status) {
+                        const active = this.status.tracks?.find(t =>
+                            t.status === 'downloading' || t.status === 'searching'
+                        );
+                        const name = active ? active.title : '...';
+                        document.title = `(${this.status.completed}/${this.status.total}) ${name} — spslsk`;
+                    } else {
+                        document.title = 'spslsk';
+                    }
+                },
+
                 startPolling() {
                     let fileRefreshCounter = 0;
                     this.pollInterval = setInterval(async () => {
                         try {
                             const resp = await fetch('/api/status');
                             this.status = await resp.json();
+                            this.updateTitle();
 
                             // Refresh file list every ~10 seconds during download
                             fileRefreshCounter++;
@@ -579,6 +592,7 @@
                             if (!this.status.active) {
                                 this.downloading = false;
                                 this.stopPolling();
+                                this.updateTitle();
                                 await this.loadManifest();
                                 await this.loadFiles();
                             }
