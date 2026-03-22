@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+downloads/
+slskd-data/
+shared/
+music/
+__pycache__/
+*.pyc
+.venv/
+.git/
+*.md
+plans/
+docs/

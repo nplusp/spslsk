@@ -4,6 +4,17 @@ set -e
 echo "=== Spotify → Soulseek Downloader ==="
 echo ""
 
+# Detect docker compose command (v2 plugin vs v1 standalone)
+if docker compose version > /dev/null 2>&1; then
+    COMPOSE="docker compose"
+elif docker-compose version > /dev/null 2>&1; then
+    COMPOSE="docker-compose"
+else
+    echo "ERROR: Neither 'docker compose' nor 'docker-compose' found."
+    echo "Please install Docker: https://docs.docker.com/get-docker/"
+    exit 1
+fi
+
 # Check if Docker/OrbStack is running
 if ! docker info > /dev/null 2>&1; then
     echo "ERROR: Docker is not running."
@@ -11,10 +22,28 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+# Check for port conflicts
+for port in 8000 5030; do
+    if lsof -i ":$port" -sTCP:LISTEN > /dev/null 2>&1; then
+        echo "ERROR: Port $port is already in use."
+        echo "Please stop the service using that port, or change it in docker-compose.yml."
+        exit 1
+    fi
+done
+
 # Check .env file
 if [ ! -f .env ]; then
     echo "No .env file found. Creating from template..."
     cp .env.example .env
+
+    # Auto-generate a random API key
+    RANDOM_KEY=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -d '/+=')
+    if [ "$(uname)" = "Darwin" ]; then
+        sed -i '' "s/supersecretapikey123change_me/$RANDOM_KEY/" .env
+    else
+        sed -i "s/supersecretapikey123change_me/$RANDOM_KEY/" .env
+    fi
+
     echo ""
     echo "Please edit .env with your credentials:"
     echo "  1. Soulseek username/password (https://www.slsknet.org/)"
@@ -24,11 +53,35 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
+# Validate that placeholder values have been replaced
+source .env
+if [ "$SLSKD_SLSK_USERNAME" = "your_soulseek_username" ] || [ -z "$SLSKD_SLSK_USERNAME" ]; then
+    echo "ERROR: Please set your Soulseek credentials in .env"
+    echo "  Register at https://www.slsknet.org/ (free)"
+    exit 1
+fi
+if [ "$SPOTIFY_CLIENT_ID" = "your_spotify_client_id" ] || [ -z "$SPOTIFY_CLIENT_ID" ]; then
+    echo "ERROR: Please set your Spotify API credentials in .env"
+    echo "  Create an app at https://developer.spotify.com/dashboard"
+    exit 1
+fi
+
+# Auto-generate API key if user still has the default placeholder
+if [ "$SLSKD_API_KEY" = "supersecretapikey123change_me" ]; then
+    RANDOM_KEY=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -d '/+=')
+    if [ "$(uname)" = "Darwin" ]; then
+        sed -i '' "s/supersecretapikey123change_me/$RANDOM_KEY/" .env
+    else
+        sed -i "s/supersecretapikey123change_me/$RANDOM_KEY/" .env
+    fi
+    echo "Generated random API key for slskd."
+fi
+
 # Create directories
-mkdir -p downloads slskd-data
+mkdir -p downloads slskd-data shared music
 
 echo "Starting services..."
-docker compose up --build -d
+$COMPOSE up --build -d
 
 echo ""
 echo "Waiting for services to start..."
@@ -36,7 +89,7 @@ sleep 5
 
 echo ""
 
-# Start host-side helper for native Finder access (port 8001)
+# Start host-side helper for native file manager access (port 8001)
 HELPER_PID=""
 cleanup() {
     if [ -n "$HELPER_PID" ]; then
@@ -45,9 +98,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Tiny Python HTTP server on host to open Finder
-python3 -c "
+# Detect OS for the "open folder" command
+if [ "$(uname)" = "Darwin" ]; then
+    OPEN_CMD="open"
+elif command -v xdg-open > /dev/null 2>&1; then
+    OPEN_CMD="xdg-open"
+else
+    OPEN_CMD=""
+fi
+
+if [ -n "$OPEN_CMD" ]; then
+    python3 -c "
 import http.server, subprocess, json, os
+
+OPEN_CMD = '$OPEN_CMD'
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -70,7 +134,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
             os.makedirs(folder, exist_ok=True)
-            subprocess.Popen(['open', folder])
+            subprocess.Popen([OPEN_CMD, folder])
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -90,13 +154,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 http.server.HTTPServer(('127.0.0.1', 8001), Handler).serve_forever()
 " &
-HELPER_PID=$!
+    HELPER_PID=$!
+fi
 
 echo "=== Ready! ==="
 echo "  App:   http://localhost:8000"
 echo "  slskd: http://localhost:5030 (user: slskd / pass: slskd)"
 echo ""
-echo "To stop: Ctrl+C or docker compose down"
+echo "To stop: Ctrl+C or $COMPOSE down"
 
 # Wait for Docker containers (keeps script running so Ctrl+C stops everything)
-docker compose logs -f
+$COMPOSE logs -f
