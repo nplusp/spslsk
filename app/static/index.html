@@ -35,6 +35,13 @@
         }
         .btn-green:hover { background: #1ed760; }
         .btn-green:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid #333;
+            color: #ccc;
+        }
+        .btn-ghost:hover { border-color: #555; color: #fff; }
+        .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
         .pulse { animation: pulse 2s infinite; }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -52,6 +59,30 @@
             border-bottom: 2px solid transparent;
         }
         .tab-inactive:hover { color: #999; }
+        /* Cells that look like static text but are actually inputs. */
+        .cell-input {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            padding: 2px 6px;
+            color: inherit;
+            font: inherit;
+            width: 100%;
+            outline: none;
+        }
+        .cell-input:hover { border-color: #2a2a2a; }
+        .cell-input:focus { border-color: #1DB954; background: #1a1a1a; }
+        /* Source badges */
+        .badge { font-size: 10px; padding: 1px 6px; border-radius: 9999px; }
+        .badge-playlist { background: #1e3a8a; color: #93c5fd; }
+        .badge-album { background: #581c87; color: #d8b4fe; }
+        .badge-track { background: #064e3b; color: #6ee7b7; }
+        .badge-text { background: #374151; color: #d1d5db; }
+        /* Row states */
+        .row-review { background: rgba(234, 179, 8, 0.08); }
+        .row-review:hover { background: rgba(234, 179, 8, 0.14); }
+        .row-done { opacity: 0.5; }
+        .row-done:hover { opacity: 0.8; }
     </style>
 </head>
 <body class="text-white min-h-screen" x-data="app()" x-cloak>
@@ -84,7 +115,7 @@
             <h1 class="text-3xl font-bold mb-1">
                 <span class="gradient-text">spslsk</span>
             </h1>
-            <p class="text-gray-500 text-xs">Spotify playlist &rarr; Soulseek download</p>
+            <p class="text-gray-500 text-xs">Paste Spotify URLs or text tracklists &rarr; Soulseek</p>
         </div>
 
         <!-- Connection status -->
@@ -97,68 +128,89 @@
         <div class="flex gap-6">
             <!-- LEFT: Main content -->
             <div class="flex-1 min-w-0">
-                <!-- Input -->
+                <!-- Input textarea -->
                 <div class="card rounded-xl p-5 mb-5">
-                    <label class="block text-gray-400 text-xs mb-2">Spotify Playlist URL</label>
-                    <div class="flex gap-3">
-                        <input
-                            type="text"
-                            x-model="playlistUrl"
-                            placeholder="https://open.spotify.com/playlist/..."
-                            class="input-dark flex-1 rounded-lg px-4 py-2.5 text-sm"
-                            @keydown.enter="fetchPlaylist"
-                        >
+                    <label class="block text-gray-400 text-xs mb-2">
+                        Paste anything: Spotify playlist/album/track URLs, plain text lines, or a mix. One per line.
+                    </label>
+                    <textarea
+                        x-model="inputText"
+                        @input="onInputEdit"
+                        rows="5"
+                        placeholder="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M&#10;Radiohead - Karma Police&#10;https://open.spotify.com/track/3WwnmMcnZueBYwnJ76QEli&#10;Miles Davis — So What&#10;https://open.spotify.com/album/1DFixLWuPkv3KT3TnV35m3"
+                        class="input-dark w-full rounded-lg px-4 py-2.5 text-sm resize-y font-mono"
+                        :disabled="downloading"
+                    ></textarea>
+                    <div class="flex items-center gap-3 mt-3">
                         <button
-                            class="btn-green rounded-lg px-5 py-2.5 text-sm"
-                            :disabled="loading || !playlistUrl"
-                            @click="fetchPlaylist"
+                            class="btn-green rounded-lg px-5 py-2 text-sm"
+                            :disabled="loading || !inputText.trim() || downloading"
+                            @click="parseInput"
                         >
-                            <span x-show="!loading">Load</span>
-                            <span x-show="loading" class="pulse">...</span>
+                            <span x-show="!loading">Parse &amp; preview</span>
+                            <span x-show="loading" class="pulse">Parsing...</span>
                         </button>
+                        <p x-show="error" class="text-red-400 text-xs" x-text="error"></p>
                     </div>
-                    <p x-show="error" class="text-red-400 text-xs mt-2" x-text="error"></p>
                 </div>
 
-                <!-- Current playlist -->
-                <template x-if="playlist">
+                <!-- Preview (after parse) -->
+                <template x-if="parsed">
                     <div class="card rounded-xl p-5">
-                        <div class="flex items-center gap-4 mb-4">
+                        <!-- Name + thumbnail + action buttons -->
+                        <div class="flex items-start gap-4 mb-4">
                             <img
-                                x-show="playlist.image"
-                                :src="playlist.image"
-                                class="w-14 h-14 rounded-lg object-cover"
+                                x-show="parsed.suggested_image"
+                                :src="parsed.suggested_image"
+                                class="w-14 h-14 rounded-lg object-cover flex-shrink-0"
                             >
-                            <div class="min-w-0">
-                                <h2 class="text-base font-semibold truncate" x-text="playlist.name"></h2>
-                                <p class="text-gray-500 text-xs">
-                                    <span x-text="playlist.total"></span> tracks
-                                    <template x-if="currentDownloadedCount > 0">
-                                        <span class="text-green-500">
-                                            &middot; <span x-text="currentDownloadedCount"></span> downloaded
-                                        </span>
+                            <div class="flex-1 min-w-0">
+                                <label class="block text-gray-400 text-xs mb-1">List name</label>
+                                <input
+                                    type="text"
+                                    x-model="listName"
+                                    class="input-dark w-full rounded-lg px-3 py-1.5 text-sm"
+                                    :disabled="downloading"
+                                >
+                                <p class="text-gray-500 text-xs mt-1">
+                                    <span class="text-green-500" x-text="readyCount + ' ready'"></span>
+                                    <template x-if="reviewCount > 0">
+                                        <span class="text-yellow-500" x-text="' · ' + reviewCount + ' need review'"></span>
+                                    </template>
+                                    <template x-if="downloadedCount > 0">
+                                        <span class="text-gray-600" x-text="' · ' + downloadedCount + ' already downloaded'"></span>
                                     </template>
                                 </p>
                             </div>
-                            <div class="ml-auto flex-shrink-0">
+                            <div class="flex flex-col items-end gap-2 flex-shrink-0">
+                                <div class="flex gap-2" x-show="!downloading">
+                                    <button
+                                        class="btn-ghost rounded-lg px-3 py-1.5 text-xs"
+                                        @click="swapAll"
+                                        :disabled="!hasTextRows"
+                                        title="Swap artist &harr; title for every text row"
+                                    >&rlarr; Swap</button>
+                                    <button
+                                        class="btn-ghost rounded-lg px-3 py-1.5 text-xs"
+                                        @click="addRow"
+                                    >+ Add row</button>
+                                </div>
                                 <button
                                     x-show="!downloading"
                                     class="btn-green rounded-lg px-5 py-2 text-sm"
+                                    :disabled="reviewCount > 0 || readyCount === 0"
                                     @click="startDownload"
-                                >
-                                    Download All
-                                </button>
+                                    :title="reviewCount > 0 ? 'Fix or delete rows marked \u26a0 first' : ''"
+                                >Start download</button>
                                 <button
                                     x-show="downloading"
                                     class="rounded-lg px-5 py-2 text-sm bg-red-600 hover:bg-red-500 font-semibold"
                                     @click="stopDownload"
-                                >
-                                    Stop
-                                </button>
+                                >Stop</button>
                             </div>
                         </div>
 
-                        <!-- Progress bar -->
+                        <!-- Progress bar during download -->
                         <template x-if="status && status.total > 0">
                             <div class="mb-3">
                                 <div class="flex justify-between text-xs text-gray-500 mb-1">
@@ -179,46 +231,60 @@
                         </template>
 
                         <!-- Track list -->
-                        <div class="space-y-0.5 max-h-[calc(100vh-320px)] overflow-y-auto">
-                            <template x-for="(track, idx) in displayTracks" :key="idx">
-                                <div class="flex items-center gap-3 py-1.5 px-3 rounded-lg hover:bg-white/5 text-sm">
+                        <div class="space-y-0.5 max-h-[calc(100vh-360px)] overflow-y-auto">
+                            <template x-for="(track, idx) in displayTracks" :key="track._key || idx">
+                                <div class="flex items-center gap-2 py-1 px-2 rounded-lg text-sm"
+                                     :class="rowClass(track)">
+                                    <!-- Status icon -->
                                     <div class="w-4 flex-shrink-0 text-center">
-                                        <template x-if="track.status === 'pending'">
-                                            <span class="text-gray-600 text-xs">&#9679;</span>
-                                        </template>
-                                        <template x-if="track.status === 'searching'">
-                                            <span class="text-yellow-400 pulse text-xs">&#8987;</span>
-                                        </template>
-                                        <template x-if="track.status === 'downloading'">
-                                            <span class="text-blue-400 pulse text-xs">&darr;</span>
-                                        </template>
-                                        <template x-if="track.status === 'completed'">
-                                            <span class="text-green-500 text-xs">&#10003;</span>
-                                        </template>
-                                        <template x-if="track.status === 'not_found'">
-                                            <span class="text-yellow-500 text-xs">?</span>
-                                        </template>
-                                        <template x-if="track.status === 'error'">
-                                            <span class="text-red-500 text-xs">!</span>
-                                        </template>
+                                        <span class="text-xs" :class="iconClass(track)" x-text="iconChar(track)"></span>
                                     </div>
+                                    <!-- Artist -->
+                                    <div class="w-1/3 min-w-0">
+                                        <input
+                                            type="text"
+                                            class="cell-input truncate"
+                                            :value="track.artist"
+                                            @change="updateCell(idx, 'artist', $event.target.value)"
+                                            :disabled="downloading || track.source !== 'text'"
+                                            placeholder="artist"
+                                        >
+                                    </div>
+                                    <span class="text-gray-600 flex-shrink-0">&mdash;</span>
+                                    <!-- Title -->
                                     <div class="flex-1 min-w-0">
-                                        <div class="truncate">
-                                            <span class="text-white" x-text="track.title"></span>
-                                            <span class="text-gray-500"> &mdash; </span>
-                                            <span class="text-gray-400" x-text="track.artist"></span>
-                                        </div>
+                                        <input
+                                            type="text"
+                                            class="cell-input truncate"
+                                            :value="track.title"
+                                            @change="updateCell(idx, 'title', $event.target.value)"
+                                            :disabled="downloading || track.source !== 'text'"
+                                            placeholder="title"
+                                        >
                                     </div>
-                                    <div x-show="track.quality" class="flex-shrink-0">
-                                        <span
-                                            class="text-xs px-2 py-0.5 rounded-full"
-                                            :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' :
-                                                    track.quality === 'already downloaded' ? 'bg-gray-700 text-gray-400' :
-                                                    track.quality.includes('missing') ? 'bg-yellow-900 text-yellow-300' :
-                                                    'bg-gray-700 text-gray-300'"
-                                            x-text="track.quality"
+                                    <!-- Source badge -->
+                                    <span class="badge flex-shrink-0" :class="sourceClass(track)" x-text="track.source"></span>
+                                    <!-- Quality pill during/after download -->
+                                    <template x-if="track.quality">
+                                        <span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0"
+                                              :class="track.quality.includes('lossless') ? 'bg-green-900 text-green-300' :
+                                                      track.quality === 'already downloaded' ? 'bg-gray-700 text-gray-400' :
+                                                      'bg-gray-700 text-gray-300'"
+                                              x-text="track.quality"
                                         ></span>
-                                    </div>
+                                    </template>
+                                    <!-- Error tooltip for needs_review -->
+                                    <template x-if="track.error && track.state === 'needs_review'">
+                                        <span class="text-yellow-500 text-xs flex-shrink-0 truncate max-w-[200px]"
+                                              :title="track.error" x-text="'⚠ ' + track.error"></span>
+                                    </template>
+                                    <!-- Delete -->
+                                    <button
+                                        x-show="!downloading"
+                                        @click="deleteRow(idx)"
+                                        class="text-gray-600 hover:text-red-500 flex-shrink-0 w-5 text-center"
+                                        title="Remove this row"
+                                    >&times;</button>
                                 </div>
                             </template>
                         </div>
@@ -254,28 +320,28 @@
                     <!-- History tab -->
                     <div x-show="sidebarTab === 'history'" class="max-h-[calc(100vh-200px)] overflow-y-auto">
                         <template x-if="history.length === 0">
-                            <p class="text-gray-600 text-xs p-4 text-center">No playlists yet</p>
+                            <p class="text-gray-600 text-xs p-4 text-center">No downloads yet</p>
                         </template>
                         <div class="divide-y divide-gray-800/50">
-                            <template x-for="(item, idx) in history" :key="item.url">
+                            <template x-for="(item, idx) in history" :key="item.ts">
                                 <div
                                     class="p-3 hover:bg-white/5 cursor-pointer transition-colors"
                                     @click="loadFromHistory(item)"
                                 >
                                     <div class="flex items-center gap-2.5">
                                         <img
-                                            x-show="item.playlist.image"
-                                            :src="item.playlist.image"
+                                            x-show="item.image"
+                                            :src="item.image"
                                             class="w-8 h-8 rounded object-cover flex-shrink-0"
                                         >
                                         <div class="min-w-0 flex-1">
-                                            <p class="text-xs font-medium truncate" x-text="item.playlist.name"></p>
+                                            <p class="text-xs font-medium truncate" x-text="historyName(item)"></p>
                                             <p class="text-xs text-gray-600">
-                                                <span x-text="item.playlist.total"></span> tracks
+                                                <span x-text="historyTotal(item)"></span> tracks
                                                 &middot; <span x-text="timeAgo(item.ts)"></span>
                                             </p>
                                         </div>
-                                        <a href="#" @click.stop.prevent="openPlaylistFolder(item.playlist.name)"
+                                        <a href="#" @click.stop.prevent="openPlaylistFolder(historyName(item))"
                                            class="text-gray-600 hover:text-green-500 flex-shrink-0 p-1"
                                            title="Open folder">
                                             <span class="text-xs">&#128193;</span>
@@ -296,7 +362,6 @@
 
                     <!-- Files tab -->
                     <div x-show="sidebarTab === 'files'" class="max-h-[calc(100vh-200px)] overflow-y-auto">
-                        <!-- Open folder button — always visible at top -->
                         <template x-if="downloadedFiles.length > 0">
                             <div class="p-2 border-b border-gray-800">
                                 <a href="#" @click.prevent="openDownloads"
@@ -328,19 +393,19 @@
             <template x-if="history.length > 0">
                 <details class="card rounded-xl">
                     <summary class="p-4 text-sm font-semibold text-gray-400 cursor-pointer">
-                        Previous Playlists (<span x-text="history.length"></span>)
+                        Previous downloads (<span x-text="history.length"></span>)
                     </summary>
                     <div class="px-4 pb-4 space-y-2">
-                        <template x-for="item in history" :key="item.url">
+                        <template x-for="item in history" :key="item.ts">
                             <div
                                 class="flex items-center gap-2 p-2 rounded-lg hover:bg-white/5 cursor-pointer"
                                 @click="loadFromHistory(item)"
                             >
-                                <img x-show="item.playlist.image" :src="item.playlist.image"
+                                <img x-show="item.image" :src="item.image"
                                      class="w-8 h-8 rounded object-cover">
                                 <div class="min-w-0">
-                                    <p class="text-xs font-medium truncate" x-text="item.playlist.name"></p>
-                                    <p class="text-xs text-gray-600" x-text="item.playlist.total + ' tracks'"></p>
+                                    <p class="text-xs font-medium truncate" x-text="historyName(item)"></p>
+                                    <p class="text-xs text-gray-600" x-text="historyTotal(item) + ' tracks'"></p>
                                 </div>
                             </div>
                         </template>
@@ -367,41 +432,71 @@
     </div>
 
     <script>
+        // Monotonic key generator so x-for :key stays stable across edits.
+        let _keyCounter = 0;
+        function nextKey() { return ++_keyCounter; }
+
         function app() {
             return {
-                playlistUrl: '',
-                playlist: null,
+                // --- Input + preview state ---
+                inputText: '',
+                parsed: null,           // ParsedInput from /api/parse-input
+                listName: '',           // editable name, pre-filled from parsed.suggested_name
                 loading: false,
                 error: '',
+
+                // --- Download state ---
                 downloading: false,
                 status: null,
                 slskdOk: false,
                 pollInterval: null,
                 downloadedFiles: [],
                 folderCopied: false,
+
+                // --- Sidebar state ---
                 history: [],
                 sidebarTab: 'history',
 
-                // Full manifest: track_id -> {filename, quality} — loaded once
-                downloadedMap: {},
+                // --- Derived counts ---
+                get readyCount() {
+                    if (!this.parsed) return 0;
+                    return this.parsed.tracks.filter(t => t.state === 'ready').length;
+                },
+                get reviewCount() {
+                    if (!this.parsed) return 0;
+                    return this.parsed.tracks.filter(t => t.state === 'needs_review').length;
+                },
+                get downloadedCount() {
+                    if (!this.parsed) return 0;
+                    return this.parsed.tracks.filter(t => t.state === 'already_downloaded').length;
+                },
+                get hasTextRows() {
+                    if (!this.parsed) return false;
+                    return this.parsed.tracks.some(t => t.source === 'text');
+                },
 
+                // Display tracks: during download we overlay backend status onto
+                // the parsed track list so user sees search/download progress per row.
                 get displayTracks() {
-                    if (this.status && this.status.tracks) {
-                        return this.status.tracks;
-                    }
-                    if (this.playlist) {
-                        return this.playlist.tracks.map(t => {
-                            const dl = this.downloadedMap[t.id];
-                            if (dl && dl.exists) {
-                                return {...t, status: 'completed', quality: 'already downloaded', filename: dl.filename};
-                            }
-                            if (dl && !dl.exists) {
-                                return {...t, status: 'pending', quality: 'file missing — will re-download'};
-                            }
-                            return {...t, status: 'pending', quality: ''};
+                    if (!this.parsed) return [];
+                    if (this.status && this.status.tracks && this.downloading) {
+                        // Backend only processes ready tracks, so we need to align
+                        // by walking parsed.tracks and pulling in backend status
+                        // for each ready row.
+                        let backendIdx = 0;
+                        return this.parsed.tracks.map(t => {
+                            if (t.state !== 'ready') return t;
+                            const backend = this.status.tracks[backendIdx++];
+                            if (!backend) return t;
+                            return {
+                                ...t,
+                                _backendStatus: backend.status,
+                                quality: backend.quality || t.quality,
+                                filename: backend.filename,
+                            };
                         });
                     }
-                    return [];
+                    return this.parsed.tracks;
                 },
 
                 get currentDownloadingTrack() {
@@ -416,46 +511,18 @@
                     return 'Processing...';
                 },
 
-                get currentDownloadedCount() {
-                    if (!this.playlist) return 0;
-                    return this.playlist.tracks.filter(t => {
-                        const dl = this.downloadedMap[t.id];
-                        return dl && dl.exists;
-                    }).length;
-                },
-
+                // --- Lifecycle ---
                 async init() {
                     await this.checkHealth();
-                    await this.loadManifest();
                     await this.loadFiles();
                     this.loadHistory();
 
-                    const cached = localStorage.getItem('spslsk_last');
-                    if (cached) {
-                        try {
-                            const data = JSON.parse(cached);
-                            this.playlistUrl = data.url || '';
-                            this.playlist = data.playlist || null;
-                        } catch {}
-                    }
-
+                    // Restore in-progress session if any (e.g. user refreshed during download)
                     try {
                         const resp = await fetch('/api/status');
                         const st = await resp.json();
                         if (st.total > 0) {
                             this.status = st;
-                            if (!this.playlist && st.playlist_name) {
-                                this.playlist = {
-                                    name: st.playlist_name,
-                                    image: null,
-                                    total: st.total,
-                                    tracks: st.tracks.map(t => ({
-                                        id: t.track_id || '',
-                                        artist: t.artist,
-                                        title: t.title,
-                                    })),
-                                };
-                            }
                             if (st.active) {
                                 this.downloading = true;
                                 this.startPolling();
@@ -463,35 +530,53 @@
                         }
                     } catch {}
 
-                    // Auto-switch to files tab if we have files but no history
                     if (this.downloadedFiles.length > 0 && this.history.length === 0) {
                         this.sidebarTab = 'files';
                     }
                 },
 
+                // --- History (localStorage) ---
                 loadHistory() {
                     try {
                         this.history = JSON.parse(localStorage.getItem('spslsk_history') || '[]');
                     } catch { this.history = []; }
                 },
 
-                saveToHistory(url, playlist) {
-                    this.history = this.history.filter(h => h.url !== url);
-                    this.history.unshift({ url, playlist, ts: Date.now() });
+                saveToHistory(entry) {
+                    // entry: { rawText, name, image, total, ts }
+                    this.history.unshift(entry);
                     if (this.history.length > 20) this.history = this.history.slice(0, 20);
                     localStorage.setItem('spslsk_history', JSON.stringify(this.history));
                 },
 
                 loadFromHistory(item) {
-                    this.playlistUrl = item.url;
-                    this.playlist = item.playlist;
+                    // New-schema entries carry rawText; old-schema entries only
+                    // have the legacy {url, playlist} shape. Fall back to url for
+                    // backward compatibility — a bare URL is valid parser input.
+                    if (item.rawText !== undefined) {
+                        this.inputText = item.rawText;
+                    } else if (item.url) {
+                        this.inputText = item.url;
+                    } else if (item.playlist && item.playlist.url) {
+                        this.inputText = item.playlist.url;
+                    }
+                    this.parsed = null;
+                    this.error = '';
                     this.status = null;
-                    localStorage.setItem('spslsk_last', JSON.stringify({
-                        url: item.url,
-                        playlist: item.playlist,
-                        ts: Date.now(),
-                    }));
-                    this.loadManifest();
+                    // Scroll to top so the user sees the restored textarea.
+                    window.scrollTo({top: 0, behavior: 'smooth'});
+                },
+
+                historyName(item) {
+                    if (item.name) return item.name;
+                    if (item.playlist && item.playlist.name) return item.playlist.name;
+                    return 'Untitled';
+                },
+
+                historyTotal(item) {
+                    if (typeof item.total === 'number') return item.total;
+                    if (item.playlist && typeof item.playlist.total === 'number') return item.playlist.total;
+                    return 0;
                 },
 
                 clearHistory() {
@@ -510,13 +595,7 @@
                     return days + 'd ago';
                 },
 
-                async loadManifest() {
-                    try {
-                        const resp = await fetch('/api/manifest');
-                        this.downloadedMap = await resp.json();
-                    } catch {}
-                },
-
+                // --- Health / files ---
                 async loadFiles() {
                     try {
                         const resp = await fetch('/api/files');
@@ -535,46 +614,36 @@
                     }
                 },
 
-                async fetchPlaylist() {
-                    if (!this.playlistUrl) return;
-                    if (this.downloading) await this.stopDownload();
+                // --- Parse & preview ---
+                onInputEdit() {
+                    // Editing the textarea after parse invalidates the preview so
+                    // the user cannot accidentally download stale tracks.
+                    if (this.parsed && !this.downloading) {
+                        this.parsed = null;
+                        this.status = null;
+                    }
+                },
 
+                async parseInput() {
+                    if (!this.inputText.trim() || this.downloading) return;
                     this.loading = true;
                     this.error = '';
-                    this.status = null;
-
-                    if (this.playlist && this.playlistUrl) {
-                        const currentUrl = localStorage.getItem('spslsk_last');
-                        if (currentUrl) {
-                            try {
-                                const prev = JSON.parse(currentUrl);
-                                if (prev.playlist && prev.url !== this.playlistUrl) {
-                                    this.saveToHistory(prev.url, prev.playlist);
-                                }
-                            } catch {}
-                        }
-                    }
-
-                    this.playlist = null;
-
+                    this.parsed = null;
                     try {
-                        const resp = await fetch('/api/playlist', {
+                        const resp = await fetch('/api/parse-input', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({url: this.playlistUrl}),
+                            body: JSON.stringify({text: this.inputText}),
                         });
                         if (!resp.ok) {
-                            const err = await resp.json();
-                            throw new Error(err.detail || 'Failed to load playlist');
+                            const err = await resp.json().catch(() => ({}));
+                            throw new Error(err.detail || 'Failed to parse input');
                         }
-                        this.playlist = await resp.json();
-                        localStorage.setItem('spslsk_last', JSON.stringify({
-                            url: this.playlistUrl,
-                            playlist: this.playlist,
-                            ts: Date.now(),
-                        }));
-                        this.saveToHistory(this.playlistUrl, this.playlist);
-                        await this.loadManifest();
+                        const data = await resp.json();
+                        // Tag each track with a stable client-side key for x-for
+                        data.tracks.forEach(t => { t._key = nextKey(); });
+                        this.parsed = data;
+                        this.listName = data.suggested_name || '';
                     } catch (e) {
                         this.error = e.message;
                     } finally {
@@ -582,13 +651,125 @@
                     }
                 },
 
+                // --- Preview editing ---
+                updateCell(idx, field, value) {
+                    const track = this.parsed.tracks[idx];
+                    if (!track || track.source !== 'text') return;
+                    track[field] = value.trim();
+                    // Editing an existing row breaks manifest dedup identity.
+                    // Clearing the id makes the backend treat this as a new
+                    // track and skip manifest lookup. Acceptable: edits are
+                    // rare and the user explicitly changed the content.
+                    track.id = '';
+                    if (track.artist && track.title) {
+                        track.state = 'ready';
+                        track.error = null;
+                    } else {
+                        track.state = 'needs_review';
+                        track.error = 'Missing artist or title';
+                    }
+                },
+
+                swapAll() {
+                    if (!this.parsed) return;
+                    this.parsed.tracks.forEach(t => {
+                        if (t.source !== 'text') return;
+                        const a = t.artist;
+                        t.artist = t.title;
+                        t.title = a;
+                        t.id = '';
+                        if (t.artist && t.title) {
+                            t.state = 'ready';
+                            t.error = null;
+                        }
+                    });
+                },
+
+                addRow() {
+                    if (!this.parsed) return;
+                    this.parsed.tracks.push({
+                        id: '',
+                        artist: '',
+                        title: '',
+                        album: '',
+                        duration_ms: 0,
+                        source: 'text',
+                        state: 'needs_review',
+                        error: 'Fill in artist and title',
+                        raw_line: '',
+                        _key: nextKey(),
+                    });
+                },
+
+                deleteRow(idx) {
+                    if (!this.parsed) return;
+                    this.parsed.tracks.splice(idx, 1);
+                },
+
+                // --- Row display helpers ---
+                iconChar(track) {
+                    if (track._backendStatus) {
+                        const map = {
+                            pending: '●', searching: '⌛', downloading: '↓',
+                            completed: '✓', not_found: '?', error: '!',
+                        };
+                        return map[track._backendStatus] || '●';
+                    }
+                    if (track.state === 'ready') return '●';
+                    if (track.state === 'already_downloaded') return '⏭';
+                    if (track.state === 'needs_review') return '⚠';
+                    return '●';
+                },
+                iconClass(track) {
+                    if (track._backendStatus === 'completed') return 'text-green-500';
+                    if (track._backendStatus === 'searching' || track._backendStatus === 'downloading') return 'text-blue-400 pulse';
+                    if (track._backendStatus === 'not_found') return 'text-yellow-500';
+                    if (track._backendStatus === 'error') return 'text-red-500';
+                    if (track.state === 'ready') return 'text-gray-500';
+                    if (track.state === 'already_downloaded') return 'text-gray-600';
+                    if (track.state === 'needs_review') return 'text-yellow-500';
+                    return 'text-gray-500';
+                },
+                rowClass(track) {
+                    if (track.state === 'needs_review') return 'row-review';
+                    if (track.state === 'already_downloaded') return 'row-done';
+                    return 'hover:bg-white/5';
+                },
+                sourceClass(track) {
+                    return {
+                        'playlist': 'badge-playlist',
+                        'album': 'badge-album',
+                        'track': 'badge-track',
+                        'text': 'badge-text',
+                    }[track.source] || 'badge-text';
+                },
+
+                // --- Start / stop download ---
                 async startDownload() {
+                    if (!this.parsed || this.reviewCount > 0 || this.readyCount === 0) return;
                     this.downloading = true;
+                    this.error = '';
                     try {
-                        await fetch('/api/download', {
+                        const resp = await fetch('/api/download', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({url: this.playlistUrl}),
+                            body: JSON.stringify({
+                                tracks: this.parsed.tracks,
+                                name: this.listName || 'Untitled',
+                                raw_text: this.inputText,
+                            }),
+                        });
+                        if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({}));
+                            throw new Error(err.detail || 'Failed to start download');
+                        }
+                        // Record in history with the new schema.
+                        this.saveToHistory({
+                            rawText: this.inputText,
+                            name: this.listName || 'Untitled',
+                            image: this.parsed.suggested_image || null,
+                            total: this.readyCount,
+                            ts: Date.now(),
                         });
                         this.startPolling();
                     } catch (e) {
@@ -634,9 +815,7 @@
                                 this.downloading = false;
                                 this.stopPolling();
                                 this.updateTitle();
-                                await this.loadManifest();
                                 await this.loadFiles();
-                                // Switch to files tab when done
                                 if (this.downloadedFiles.length > 0) {
                                     this.sidebarTab = 'files';
                                 }
