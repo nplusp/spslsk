@@ -46,11 +46,30 @@ class SlskdClient:
         except Exception:
             return False
 
+    # Backoff delay (seconds) before retrying a search after slskd returns
+    # HTTP 429 Too Many Requests. One retry, then propagate.
+    _SEARCH_RATELIMIT_BACKOFF_SEC = 5
+
     async def search(self, query: str) -> str:
-        """Start a search and return the search ID."""
-        result = await self._post("/searches", json={
-            "searchText": query,
-        })
+        """Start a search and return the search ID.
+
+        Retries once on HTTP 429 (slskd's REST rate limit) after a short
+        backoff. Other status errors propagate immediately because they are
+        either deterministic (400 — bad query) or slskd-internal bugs (500)
+        that retry would not fix.
+        """
+        try:
+            result = await self._post(
+                "/searches", json={"searchText": query}
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 429:
+                raise
+            # 429 Too Many Requests — wait and retry once.
+            await asyncio.sleep(self._SEARCH_RATELIMIT_BACKOFF_SEC)
+            result = await self._post(
+                "/searches", json={"searchText": query}
+            )
 
         # If POST returns the search object directly
         if isinstance(result, dict) and "id" in result:
