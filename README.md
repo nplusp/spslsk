@@ -78,6 +78,9 @@ Files are saved to `./downloads/` in the project directory.
 **"slskd not connected"**
 Make sure no other Soulseek client (Nicotine+, SoulseekQt) is running with the same account. Only one connection per account is allowed.
 
+**"Unknown API key beginning with: ..." in slskd logs**
+This means `slskd-data/slskd.yml` is out of sync with `SLSKD_API_KEY` in `.env`. `start.sh` normally handles this automatically — it writes the API key into a managed block in `slskd.yml` on every run. If you ran `docker compose up` directly instead of `./start.sh`, or edited `.env` without re-running `./start.sh`, the two will drift. Fix: `docker compose down && ./start.sh`.
+
 **Tracks not found**
 Some niche artists may have limited availability on Soulseek. Try again later — it's a P2P network, availability changes.
 

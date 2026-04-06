@@ -119,21 +119,18 @@ if [ ! -f "$SLSKD_YML" ]; then
     # Fresh install — create a minimal file with just our block.
     echo "$MANAGED_BLOCK" > "$SLSKD_YML"
     echo "Created $SLSKD_YML with slskd API key."
-elif grep -qF "$MARKER_BEGIN" "$SLSKD_YML"; then
-    # Managed block already present — replace it in place using awk so we
-    # don't need a tempfile dance with line anchors that would be fragile
-    # across BSD/GNU sed differences.
-    awk -v begin="$MARKER_BEGIN" -v end="$MARKER_END" -v block="$MANAGED_BLOCK" '
-        BEGIN {in_block = 0; printed = 0}
-        index($0, begin) {in_block = 1; if (!printed) {print block; printed = 1}; next}
-        index($0, end) {in_block = 0; next}
-        !in_block {print}
-    ' "$SLSKD_YML" > "$SLSKD_YML.tmp" && mv "$SLSKD_YML.tmp" "$SLSKD_YML"
-    echo "Updated slskd API key in $SLSKD_YML."
 else
-    # No managed block yet — prepend one, preserving existing contents.
-    (echo "$MANAGED_BLOCK"; echo; cat "$SLSKD_YML") > "$SLSKD_YML.tmp" && mv "$SLSKD_YML.tmp" "$SLSKD_YML"
-    echo "Added managed block to $SLSKD_YML."
+    # Strip any existing managed block, then prepend a fresh one. We
+    # always rewrite rather than patch in place so the logic is the same
+    # whether the block exists yet or not, and it avoids BSD-vs-GNU sed/awk
+    # portability traps. The sed address range uses escaped '.' so the
+    # literal '.sh' in the marker doesn't act as a regex metachar.
+    MARKER_BEGIN_RE="# BEGIN managed-by: spslsk-start\.sh"
+    MARKER_END_RE="# END managed-by: spslsk-start\.sh"
+    sed "/$MARKER_BEGIN_RE/,/$MARKER_END_RE/d" "$SLSKD_YML" > "$SLSKD_YML.tmp"
+    (echo "$MANAGED_BLOCK"; echo; cat "$SLSKD_YML.tmp") > "$SLSKD_YML"
+    rm -f "$SLSKD_YML.tmp"
+    echo "Synced slskd API key into $SLSKD_YML."
 fi
 
 echo "Starting services..."
