@@ -9,8 +9,13 @@ services:
       - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME}
       - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD}
       - SLSKD_REMOTE_CONFIGURATION=true
-      - SLSKD_WEB_AUTHENTICATION__API_KEYS__SPOTASOUL__KEY=${SLSKD_API_KEY}
       - SLSKD_SHARED_DIR=/shared;/music
+      # NOTE: the API key is NOT set here via env vars. slskd's .NET config
+      # binder silently drops new Dictionary<string, T> entries passed via
+      # SLSKD_WEB_AUTHENTICATION__API_KEYS__<NAME>__KEY etc., so backend
+      # requests come back as "Unknown API key beginning with: ...". Instead,
+      # start.sh writes the api_keys block into slskd-data/slskd.yml which
+      # slskd loads reliably on startup.
     volumes:
       - ./slskd-data:/app
       - ./downloads:/app/downloads
