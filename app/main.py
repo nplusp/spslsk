@@ -6,19 +6,24 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.spotify import get_playlist_tracks
+from app.parser import parse_input
 from app.slskd_client import SlskdClient
 from app.downloader import process_playlist, get_session_status, stop_session, _load_manifest
 
 app = FastAPI(title="Spotify → Soulseek Downloader")
 
 
-class PlaylistRequest(BaseModel):
-    url: str
+class ParseInputRequest(BaseModel):
+    text: str
 
 
 class DownloadRequest(BaseModel):
-    url: str
+    # Tracks come from the frontend after user edits in the preview, so the
+    # backend no longer re-fetches by URL. raw_text is preserved for History
+    # so Reload can repopulate the textarea exactly as typed.
+    tracks: list[dict]
+    name: str
+    raw_text: str = ""
 
 
 class CheckDownloadedRequest(BaseModel):
@@ -38,30 +43,37 @@ async def health():
     return {"slskd": ok}
 
 
-@app.post("/api/playlist")
-async def fetch_playlist(req: PlaylistRequest):
-    """Parse a Spotify playlist URL and return track list."""
+@app.post("/api/parse-input")
+async def parse_input_endpoint(req: ParseInputRequest):
+    """Parse a raw textarea blob into a ParsedInput.
+
+    Accepts any mix of Spotify URLs (playlist/album/track) and plain text
+    track lines. Returns the full resolved track list plus a suggested
+    name and optional thumbnail for the preview UI. Per-line errors are
+    captured inside the parser as needs_review rows; only unexpected
+    exceptions reach the HTTP layer as 5xx.
+    """
     try:
-        data = get_playlist_tracks(req.url)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return parse_input(req.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Spotify error: {e}")
-    return data
+        raise HTTPException(status_code=500, detail=f"Parse error: {e}")
 
 
 @app.post("/api/download")
 async def start_download(req: DownloadRequest):
-    """Start searching and downloading all tracks from a playlist."""
-    try:
-        data = get_playlist_tracks(req.url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Start downloading a user-curated, already-resolved track list.
 
-    # Launch download in background
-    asyncio.create_task(process_playlist(data["tracks"], data["name"]))
+    The frontend is responsible for editing the preview and sending only
+    the tracks the user wants. We still filter to 'ready' state as a
+    defensive measure — frontend should already block needs_review rows
+    via the disabled Start button, but backend trusts nothing.
+    """
+    ready_tracks = [t for t in req.tracks if t.get("state") == "ready"]
 
-    return {"message": "Download started", "total": data["total"]}
+    # Launch download in background. process_playlist signature is unchanged.
+    asyncio.create_task(process_playlist(ready_tracks, req.name))
+
+    return {"message": "Download started", "total": len(ready_tracks)}
 
 
 @app.get("/api/status")
