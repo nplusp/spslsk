@@ -38,7 +38,10 @@ SLSKD_SLSK_USERNAME=your_soulseek_username
 SLSKD_SLSK_PASSWORD=your_soulseek_password
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-SLSKD_API_KEY=any_random_string_here
+# Leave SLSKD_API_KEY at its placeholder value — start.sh will auto-generate
+# a random value the first time you run it. It's a shared secret between
+# the backend and slskd containers, not an external credential.
+SLSKD_API_KEY=supersecretapikey123change_me
 ```
 
 ### 5. Run
