@@ -1,8 +1,10 @@
 import asyncio
 import json
+import math
 import os
 import re
 import logging
+import unicodedata
 from pathlib import Path
 from dataclasses import dataclass, field
 from app.slskd_client import SlskdClient
@@ -68,42 +70,110 @@ def _get_bitrate_from_attrs(file_info: dict) -> int:
     return 0
 
 
-def _score_file(file_info: dict) -> tuple[int, int, int]:
-    """Score a file for sorting. Lower score = better quality.
+def _score_file(file_info: dict, artist: str = "", title: str = "") -> tuple:
+    """Score a file for sorting. Lower tuple = better candidate.
 
-    Returns (format_priority, -bitrate, file_size_inverse) for sorting.
+    Sort key shape:
+        (phrase_rank, neg_match_count, format_priority, neg_bitrate, neg_size)
+
+    Where:
+      - phrase_rank: 0 if the cleaned title appears as a contiguous substring
+        anywhere in the path, else 1. **Phrase match outranks format tier**
+        (R7) — a correctly-identified MP3 beats a wrongly-named FLAC.
+      - neg_match_count: negative count of significant title words present
+        in the path. More matches sort earlier (smaller negative number).
+        This is the tiebreaker between two non-phrase-match candidates (R8).
+      - format_priority: existing FORMAT_PRIORITY table (FLAC=1, ALAC=2, ...)
+      - neg_bitrate: 0 for lossless formats, else -bitrate. Matches the
+        existing two-branch logic from before this change.
+      - neg_size: -size as final tiebreaker.
+
+    Calling _score_file without artist/title still works (returns the
+    pre-improvement scoring) — the new sort keys evaluate to (1, 0, ...)
+    which is identical to "no phrase, no matches, fall through to format".
     """
     filename = file_info.get("filename", "")
+    path_lower = filename.lower()
     ext = _get_file_extension(filename)
     format_score = FORMAT_PRIORITY.get(ext, 99)
     bitrate = _get_bitrate_from_attrs(file_info)
     size = file_info.get("size", 0)
 
-    # For lossless formats, bitrate doesn't matter much — prefer by size
-    if ext in {".flac", ".wav", ".alac"}:
-        return (format_score, 0, -size)
+    # Match-strength keys
+    if title:
+        clean_title_text = _clean_query(title)
+        title_lower = clean_title_text.lower().strip()
+        # Full phrase match: cleaned title as contiguous substring of path.
+        phrase_rank = 0 if title_lower and title_lower in path_lower else 1
+        # Partial match count: how many significant title words are present.
+        title_words = [w.lower() for w in _significant_words(clean_title_text)]
+        match_count = sum(1 for w in title_words if w in path_lower)
+    else:
+        phrase_rank = 1
+        match_count = 0
 
-    # For lossy, prefer higher bitrate
-    return (format_score, -bitrate, -size)
+    # Format / bitrate / size keys (preserve historical behavior)
+    if ext in {".flac", ".wav", ".alac"}:
+        return (phrase_rank, -match_count, format_score, 0, -size)
+    return (phrase_rank, -match_count, format_score, -bitrate, -size)
 
 
 def _matches_track(filename: str, artist: str, title: str) -> bool:
-    """Check if a filename roughly matches the expected track.
+    """Check whether a candidate file matches the expected track.
 
-    Lenient matching: at least one significant title word must appear.
-    Short filler words are ignored.
+    Three rules, all required (unless the short-artist fallback triggers):
+
+    R1 — Artist check: at least one significant artist word must appear
+         somewhere in the full file path. Many peers store files as
+         `Artist/Album/Track.ext`; the artist often lives in a parent
+         directory, not the basename, so we match against the full path
+         string.
+
+    R2 — Scaled title threshold: at least `ceil(N/2)` of N significant
+         title words must appear in the path. For 2-word titles → 1
+         match. For 6-word titles → 3 matches. This closes the bug where
+         long titles made the threshold trivially satisfiable.
+
+    R3 — Short-artist fallback: if the artist has zero significant words
+         after the filler/length filter (U2, M83, X, AC/DC if split, etc.),
+         skip the artist check and instead require a contiguous phrase
+         match of the cleaned title in the path.
+
+    The `filename` parameter is the FULL path string from slskd (e.g.,
+    "Artist\\Album\\Track.flac"). Backslash separators are treated as
+    regular characters by substring matching, which works fine for our
+    purpose. Matching is case-insensitive.
     """
-    fname_lower = filename.lower()
-    filler_words = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is"}
+    path_lower = filename.lower()
 
-    clean_title = _clean_query(title).lower()
-    title_words = [w for w in clean_title.split() if w not in filler_words and len(w) > 2]
+    clean_artist_text = _clean_query(artist)
+    clean_title_text = _clean_query(title)
 
+    artist_words = [w.lower() for w in _significant_words(clean_artist_text)]
+    title_words = [w.lower() for w in _significant_words(clean_title_text)]
+
+    # R3 fallback: if no significant artist words, require a contiguous
+    # phrase match of the cleaned title.
+    if not artist_words:
+        if not title_words:
+            # Both degenerate (e.g., "X - Y"). Conservative true — let the
+            # scorer/sorter filter the rest. Matches the historical
+            # behavior for pathological inputs.
+            return True
+        phrase = clean_title_text.lower().strip()
+        return bool(phrase) and phrase in path_lower
+
+    # R1: at least one artist word in the full path.
+    if not any(w in path_lower for w in artist_words):
+        return False
+
+    # R2: scaled title threshold. Empty significant title words → conservative
+    # true (all-filler title; rare in practice).
     if not title_words:
         return True
-
-    matches = sum(1 for w in title_words if w in fname_lower)
-    return matches >= 1
+    required = max(1, math.ceil(len(title_words) / 2))
+    matches = sum(1 for w in title_words if w in path_lower)
+    return matches >= required
 
 
 def _describe_quality(file_info: dict) -> str:
@@ -199,18 +269,104 @@ def _clean_query(text: str) -> str:
     return result
 
 
+# Indivisible Latin glyphs that NFKD does NOT decompose. Mapped explicitly
+# so non-ASCII artist/title characters become slskd-safe AND match more peer
+# files (peers mostly use ASCII filenames).
+_ASCII_FOLD_TABLE = str.maketrans({
+    "Æ": "AE", "æ": "ae",
+    "Ø": "O", "ø": "o",
+    "ß": "ss",
+    "Ð": "D", "ð": "d",
+    "Þ": "Th", "þ": "th",
+    "Ł": "L", "ł": "l",
+    "Œ": "OE", "œ": "oe",
+})
+
+
+def _ascii_fold(text: str) -> str:
+    """Fold Unicode characters to ASCII for slskd-safe queries.
+
+    Two-step transform: (1) explicit table for indivisible Latin glyphs
+    that NFKD does not split (Æ, Ø, ß, Ł, Œ); (2) NFKD normalization +
+    drop-on-encode for accented characters whose NFKD decomposition
+    produces a base letter plus combining marks (é → e + ́, ü → u + ̈).
+    """
+    text = text.translate(_ASCII_FOLD_TABLE)
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
+def _collapse_single_char_runs(text: str) -> str:
+    """Collapse runs of >=2 consecutive single-character whitespace-separated
+    tokens into one concatenated token.
+
+    Examples:
+        "S L F" -> "SLF"           (full collapse)
+        "S L F Merkin" -> "SLF Merkin"  (partial)
+        "Mr X Foo" -> "Mr X Foo"    (single isolated 1-char left alone)
+        "Mr X Y Foo" -> "Mr XY Foo" (run in middle collapses)
+
+    Rationale: slskd's underlying Soulseek client throws ArgumentException
+    for queries that consist solely of single-char tokens because they would
+    flood the network. Users typing "S L F" almost always mean the
+    abbreviation "SLF".
+    """
+    tokens = text.split()
+    result = []
+    i = 0
+    while i < len(tokens):
+        if len(tokens[i]) == 1:
+            run_start = i
+            while i < len(tokens) and len(tokens[i]) == 1:
+                i += 1
+            run = tokens[run_start:i]
+            if len(run) >= 2:
+                result.append("".join(run))
+            else:
+                result.append(run[0])
+        else:
+            result.append(tokens[i])
+            i += 1
+    return " ".join(result)
+
+
+# Filler words that shouldn't count as significant title/artist tokens.
+# Both `_build_search_queries` and `_matches_track` use this set so the
+# definition of "significant word" stays consistent across query construction
+# and result filtering.
+_FILLER_WORDS = frozenset({
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is",
+})
+
+
+def _significant_words(text: str) -> list[str]:
+    """Split text into significant words: longer than 2 chars, not filler."""
+    return [w for w in text.split() if w.lower() not in _FILLER_WORDS and len(w) > 2]
+
+
 def _build_search_queries(artist: str, title: str) -> list[str]:
     """Build search queries: broad first, then filter results on our side.
 
-    Soulseek matches ALL words against file paths.
-    Strategy: search by artist only (gets many results), then we filter
-    for the specific track on our side.
+    Soulseek matches ALL words against file paths. Strategy: search by
+    artist only (gets many results), then refine with the longest significant
+    title word as a second query if the first is empty.
+
+    Three defensive transforms applied to the artist before queries are built:
+      1. Apostrophe stripping (Soulseek does not handle them well).
+      2. Single-char token run collapse — "S L F" -> "SLF". slskd rejects
+         queries with only single-char tokens with HTTP 400.
+      3. ASCII-folding — "Björk" -> "Bjork". slskd 0.24 has a database
+         concurrency bug on some non-ASCII queries (DHÆÜR diagnostic case),
+         and peer file paths are mostly ASCII anyway, so this also boosts
+         recall.
+
+    The narrowing query picks the LONGEST significant title word (length is
+    a cheap proxy for specificity) instead of the first.
     """
     clean_artist = _clean_query(artist)
     first_artist = clean_artist.split(",")[0].strip()
-
-    # Remove apostrophes (Can't -> Cant) — Soulseek doesn't handle them well
     first_artist = first_artist.replace("'", "")
+    first_artist = _collapse_single_char_runs(first_artist)
+    first_artist = _ascii_fold(first_artist)
 
     queries = []
     seen = set()
@@ -221,15 +377,14 @@ def _build_search_queries(artist: str, title: str) -> list[str]:
             seen.add(q)
             queries.append(q)
 
-    # Query 1: just the artist name (broad, most results)
     _add(first_artist)
 
-    # Query 2: artist + first significant title word (narrower)
-    filler = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is"}
-    clean_title = _clean_query(title).replace("'", "")
-    title_words = [w for w in clean_title.split() if w.lower() not in filler and len(w) > 2]
+    clean_title = _ascii_fold(_clean_query(title).replace("'", ""))
+    title_words = _significant_words(clean_title)
     if title_words:
-        _add(f"{first_artist} {title_words[0]}")
+        # Longest significant word — better specificity proxy than "first".
+        # Python's max() returns the first occurrence on length ties.
+        _add(f"{first_artist} {max(title_words, key=len)}")
 
     return queries
 
@@ -340,10 +495,11 @@ async def _search_and_download_track(
             logger.info(f"Not found: {track_status.artist} - {track_status.title}")
             return
 
-        # Sort: free slots first, then by quality score
+        # Sort: free slots first, then by quality score (match strength
+        # outranks format tier — see _score_file docstring).
         candidates.sort(key=lambda c: (
             0 if c["free_upload"] else 1,
-            _score_file(c["file"]),
+            _score_file(c["file"], track_status.artist, track_status.title),
         ))
 
         # Try up to MAX_DOWNLOAD_ATTEMPTS candidates in score order. Real-world
