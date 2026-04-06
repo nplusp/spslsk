@@ -35,10 +35,21 @@ class TrackStatus:
     artist: str
     title: str
     track_id: str = ""  # Spotify track ID for dedup
-    status: str = "pending"  # pending, searching, found, downloading, completed, not_found, error
+    # Lifecycle states:
+    #   pending → searching → (queued | not_found | error | completed)
+    #   queued → downloading → (completed | error)
+    # 'queued' is the new intermediate state introduced by the search/download
+    # decouple: search has resolved candidates and the track is waiting for a
+    # download worker to pick it up.
+    status: str = "pending"
     quality: str = ""
     filename: str = ""
     error: str = ""
+    # Resolved download candidates from the search phase. Populated by
+    # _search_for_candidates, drained by _download_one_track. Cleared after
+    # the download attempt completes (regardless of success) to free memory
+    # for large playlists.
+    candidates: list = field(default_factory=list)
 
 
 @dataclass
@@ -427,10 +438,16 @@ def _move_to_playlist_folder(filename: str, playlist_name: str) -> str | None:
     return filename
 
 
-# Maximum concurrent searches per wave (2 = safe, avoids Soulseek flood-kick)
-PARALLEL_SEARCHES = 2
-# Pause between waves in seconds
-WAVE_DELAY = 3
+# Search concurrency: how many search calls can be in flight at once.
+# slskd's REST API rate-limits searches with HTTP 429; the Soulseek protocol
+# itself flood-kicks aggressive query bursts. Keep this conservative.
+SEARCH_CONCURRENCY = 1
+# Download concurrency: how many download workers drain the queue in
+# parallel. Downloads do NOT trigger slskd rate limits — each is a per-peer
+# transfer — so we can be much more aggressive here than for searches.
+DOWNLOAD_CONCURRENCY = 4
+# Pause between successive search calls (kindness to slskd's rate limiter).
+SEARCH_DELAY = 3
 # Maximum candidates to try per track before giving up. Real-world peer
 # failures (mid-transfer drops, queue full, transient rejections) are common
 # enough that one-shot download attempts silently mark perfectly findable
@@ -439,12 +456,19 @@ WAVE_DELAY = 3
 MAX_DOWNLOAD_ATTEMPTS = 3
 
 
-async def _search_and_download_track(
-    client: SlskdClient, track_status: TrackStatus, playlist_name: str = ""
+async def _search_for_candidates(
+    client: SlskdClient, track_status: TrackStatus
 ) -> None:
-    """Search for a single track and download the best result.
+    """Phase 1 of the pipeline — search slskd and populate the candidate list.
 
-    This is the core per-track logic, extracted to run in parallel waves.
+    Sets `track_status.status` to one of:
+      - 'completed' (manifest skip — already downloaded, no work needed)
+      - 'queued' (candidates resolved, ready for the download phase)
+      - 'not_found' (search returned no acceptable matches)
+      - 'error' (search itself raised — slskd 5xx, network, etc.)
+
+    Does NOT call download_file. The download is performed by the separate
+    `_download_one_track` function in the download phase.
     """
     # Skip already downloaded tracks (by Spotify track ID)
     if track_status.track_id:
@@ -468,10 +492,9 @@ async def _search_and_download_track(
             await client.delete_search(search_id)
             if responses:
                 break
-            # Pause between query attempts to avoid flood
             await asyncio.sleep(2)
 
-        # Collect all audio files from all responses
+        # Collect all matching audio files into candidates
         candidates = []
         for resp in responses:
             username = resp.get("username", "")
@@ -484,43 +507,85 @@ async def _search_and_download_track(
                     f.get("filename", ""), track_status.artist, track_status.title
                 ):
                     continue
-                candidates.append({
-                    "username": username,
-                    "free_upload": free_upload,
-                    "file": f,
-                })
+                candidates.append(
+                    {
+                        "username": username,
+                        "free_upload": free_upload,
+                        "file": f,
+                    }
+                )
 
         if not candidates:
             track_status.status = "not_found"
-            logger.info(f"Not found: {track_status.artist} - {track_status.title}")
+            logger.info(
+                f"Not found: {track_status.artist} - {track_status.title}"
+            )
             return
 
         # Sort: free slots first, then by quality score (match strength
         # outranks format tier — see _score_file docstring).
-        candidates.sort(key=lambda c: (
-            0 if c["free_upload"] else 1,
-            _score_file(c["file"], track_status.artist, track_status.title),
-        ))
+        candidates.sort(
+            key=lambda c: (
+                0 if c["free_upload"] else 1,
+                _score_file(c["file"], track_status.artist, track_status.title),
+            )
+        )
 
-        # Try up to MAX_DOWNLOAD_ATTEMPTS candidates in score order. Real-world
-        # peer failures (peer drops connection mid-transfer, queue full,
-        # transient rejection) are common — we have plenty of valid candidates
-        # left in `candidates` after the top one fails, so giving up after
-        # one shot wastes the search work and silently shows the user `error`
-        # for tracks that are perfectly downloadable from a different peer.
-        attempted = candidates[:MAX_DOWNLOAD_ATTEMPTS]
-        last_error: Exception | None = None
+        track_status.candidates = candidates
+        track_status.status = "queued"
+
+    except Exception as e:
+        track_status.status = "error"
+        track_status.error = str(e)
+
+
+async def _download_one_track(
+    client: SlskdClient,
+    track_status: TrackStatus,
+    playlist_name: str = "",
+) -> None:
+    """Phase 2 of the pipeline — download from a pre-resolved candidate list.
+
+    Iterates `track_status.candidates` (already sorted by `_score_file`) up
+    to MAX_DOWNLOAD_ATTEMPTS times, falling back to the next candidate when
+    a download attempt fails. On success, records to the manifest and moves
+    the file into the playlist folder. On exhaustion, marks the track as
+    'error' with a message naming the attempt count and final exception.
+
+    Tracks not in 'queued' state are skipped (no-op). This makes the
+    function safe to call from a worker that processes a mix of statuses
+    coming out of the search phase.
+    """
+    # Skip tracks that aren't ready for download (already completed via
+    # manifest, or marked not_found / error during the search phase).
+    if track_status.status != "queued":
+        return
+
+    candidates = track_status.candidates
+    if not candidates:
+        # Defensive — shouldn't happen if status is 'queued', but handle
+        # gracefully if it does.
+        track_status.status = "not_found"
+        return
+
+    attempted = candidates[:MAX_DOWNLOAD_ATTEMPTS]
+    last_error: Exception | None = None
+    try:
         for attempt_idx, candidate in enumerate(attempted, start=1):
             track_status.status = "downloading"
             track_status.quality = _describe_quality(candidate["file"])
-            track_status.filename = candidate["file"].get("filename", "").split("\\")[-1]
+            track_status.filename = (
+                candidate["file"].get("filename", "").split("\\")[-1]
+            )
             logger.info(
                 f"Downloading (attempt {attempt_idx}/{len(attempted)}): "
                 f"{track_status.filename} from {candidate['username']} "
                 f"({track_status.quality})"
             )
             try:
-                await client.download_file(candidate["username"], candidate["file"])
+                await client.download_file(
+                    candidate["username"], candidate["file"]
+                )
             except Exception as e:
                 last_error = e
                 logger.warning(
@@ -528,42 +593,80 @@ async def _search_and_download_track(
                     f"{track_status.artist} - {track_status.title}: {e}"
                 )
                 continue
-            # This candidate succeeded — break out of the fallback loop.
+            # Success on this candidate.
             track_status.status = "completed"
             break
         else:
-            # for/else: runs only when the loop completed without `break`,
-            # i.e. every attempt raised. Mark the track as error with a
-            # message that names the attempt count and the final exception.
+            # for/else: every attempt failed
             track_status.status = "error"
             track_status.error = (
                 f"All {len(attempted)} candidates failed: {last_error}"
             )
             return
 
-        # Post-download success steps. Reached only after the for-loop broke
-        # on a successful download — never reached if all attempts failed.
+        # Post-download success steps (only on break from loop)
         if playlist_name:
             _move_to_playlist_folder(track_status.filename, playlist_name)
-
-        # Record in manifest so we don't re-download next time
         if track_status.track_id:
             _record_download(
                 track_status.track_id,
                 track_status.filename,
                 track_status.quality,
             )
+    finally:
+        # Free the candidates list. For large playlists, holding hundreds
+        # of file dicts per track adds up quickly.
+        track_status.candidates = []
 
-    except Exception as e:
-        track_status.status = "error"
-        track_status.error = str(e)
+
+async def _search_and_download_track(
+    client: SlskdClient, track_status: TrackStatus, playlist_name: str = ""
+) -> None:
+    """Backwards-compatible wrapper that runs search + download sequentially
+    for a single track. Preserves the pre-pipeline call surface so existing
+    tests and any external callers keep working unchanged.
+
+    The new pipeline in `process_playlist` does not use this wrapper — it
+    calls `_search_for_candidates` and `_download_one_track` directly so
+    that search and download can run in parallel through a queue.
+    """
+    await _search_for_candidates(client, track_status)
+    await _download_one_track(client, track_status, playlist_name)
 
 
 async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
-    """Search and download all tracks from a playlist.
+    """Search and download all tracks from a playlist via a two-phase pipeline.
 
-    Processes tracks in parallel waves of PARALLEL_SEARCHES (default 2)
-    to speed up downloads while avoiding Soulseek flood-kick.
+    Architecture: search and download are decoupled into separate worker
+    pools that communicate through an asyncio.Queue.
+
+      ┌─ search worker (1) ──────┐
+      │ for each track:          │
+      │   _search_for_candidates │      ┌─ download workers (4) ───┐
+      │   if 'queued': enqueue ──┼─────►│ pull from queue          │
+      │   sleep SEARCH_DELAY     │      │ _download_one_track      │
+      └──────────────────────────┘      │ (3-attempt fallback)     │
+                                        └──────────────────────────┘
+
+    Why decouple: search and download have very different rate-limit
+    profiles. Searches trigger slskd's REST 429 and Soulseek's protocol
+    flood-kick if bursted; downloads do not (they're per-peer transfers).
+    The old wave-based design coupled them through one parallelism number,
+    forcing a compromise between "search slow enough not to 429" and
+    "download fast enough to feel snappy". Decoupling lets each phase use
+    its own concurrency budget.
+
+    Pipeline benefits:
+      - Search runs sequentially (SEARCH_CONCURRENCY=1) with SEARCH_DELAY
+        between calls — kind to slskd's rate limiter, no more 429.
+      - Downloads run with DOWNLOAD_CONCURRENCY=4 — much faster than the
+        old PARALLEL_SEARCHES=2 because the parallelism is now applied
+        where it matters (the 10-min-per-attempt download polling, not
+        the few-seconds search step).
+      - Search and download interleave: as soon as the first track has
+        candidates, download workers start pulling while the search worker
+        is still resolving track 2, 3, 4. Total time ≈ max(search_total,
+        download_total) instead of sum.
     """
     global session
 
@@ -582,31 +685,57 @@ async def process_playlist(tracks: list[dict], playlist_name: str) -> None:
 
     client = SlskdClient()
 
-    # Process in waves of PARALLEL_SEARCHES
-    pending = [t for t in session.tracks]
-    while pending and session.active:
-        # Ensure slskd is connected before wave
+    # Health check before doing anything. If slskd is disconnected, mark
+    # everything as error and bail — same behavior as the old wave loop.
+    if not await client.health_check():
+        logger.warning("slskd disconnected, waiting 15s for reconnect...")
+        await asyncio.sleep(15)
         if not await client.health_check():
-            logger.warning("slskd disconnected, waiting 15s for reconnect...")
-            await asyncio.sleep(15)
-            if not await client.health_check():
-                for t in pending:
-                    t.status = "error"
-                    t.error = "slskd disconnected"
+            for t in session.tracks:
+                t.status = "error"
+                t.error = "slskd disconnected"
+            session.active = False
+            return
+
+    # Sentinel to tell download workers there are no more tracks coming.
+    DOWNLOAD_SENTINEL: object = object()
+    download_queue: asyncio.Queue = asyncio.Queue()
+
+    async def search_worker() -> None:
+        """Resolve candidates for each track and enqueue ready ones."""
+        for track in session.tracks:
+            if not session.active:
                 break
+            await _search_for_candidates(client, track)
+            # Only enqueue tracks that actually have something to download.
+            # Manifest-skipped (status=completed), not_found, and error
+            # tracks are terminal and skip the download phase entirely.
+            if track.status == "queued":
+                await download_queue.put(track)
+            # Pace search calls to stay below slskd's REST rate limit.
+            await asyncio.sleep(SEARCH_DELAY)
+        # Signal end-of-stream to every download worker.
+        for _ in range(DOWNLOAD_CONCURRENCY):
+            await download_queue.put(DOWNLOAD_SENTINEL)
 
-        # Take next wave (skip already-completed from manifest check)
-        wave = pending[:PARALLEL_SEARCHES]
-        pending = pending[PARALLEL_SEARCHES:]
+    async def download_worker() -> None:
+        """Drain the queue and download until the sentinel is seen."""
+        while True:
+            track = await download_queue.get()
+            if track is DOWNLOAD_SENTINEL:
+                return
+            if not session.active:
+                # Drain remaining items quickly to unblock the search worker
+                continue
+            await _download_one_track(client, track, playlist_name)
 
-        # Run wave in parallel
-        await asyncio.gather(
-            *[_search_and_download_track(client, t, playlist_name) for t in wave]
-        )
-
-        # Pause between waves to avoid Soulseek flood-kick
-        if pending and session.active:
-            await asyncio.sleep(WAVE_DELAY)
+    # Run search and downloads as concurrent coroutines. asyncio.gather
+    # propagates exceptions; we don't expect any to escape because the
+    # helpers catch their own errors and surface them as track.status='error'.
+    await asyncio.gather(
+        search_worker(),
+        *[download_worker() for _ in range(DOWNLOAD_CONCURRENCY)],
+    )
 
     session.active = False
 
