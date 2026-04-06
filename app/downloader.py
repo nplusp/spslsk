@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import shutil
 import logging
 import unicodedata
 from pathlib import Path
@@ -401,41 +402,205 @@ def _build_search_queries(artist: str, title: str) -> list[str]:
 
 
 def _sanitize_dirname(name: str) -> str:
-    """Make a string safe for use as a directory/file name."""
-    # Remove characters not allowed in filenames
-    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    """Make a string safe for use as a directory/file name.
+
+    Strips characters that are invalid on common filesystems PLUS square
+    brackets, which are legal in filenames but are treated as glob character
+    classes by `pathlib.Path.rglob` — leaving them in would break
+    `_is_already_downloaded` (which uses rglob to locate manifest-recorded
+    files by name) for any title containing `[` or `]`, e.g. "Song [Skit]".
+    """
+    # Remove characters not allowed in filenames, plus [] which break rglob
+    name = re.sub(r'[<>:"/\\|?*\[\]]', '', name)
     # Collapse whitespace
     name = re.sub(r'\s+', ' ', name).strip()
     # Limit length
     return name[:100] if name else "Unknown"
 
 
-def _move_to_playlist_folder(filename: str, playlist_name: str) -> str | None:
-    """Move a downloaded file into a playlist-named subfolder.
+# Remix / edit / version keywords used to decide whether the tail of a
+# Spotify title (the part after the last " - ") is actually a version marker
+# and should be wrapped in parentheses in the target filename. Lowercase,
+# whole-word matching (with hyphens preserved, so "re-edit" is a single
+# token). Extend as new patterns show up in the wild.
+_REMIX_KEYWORDS: frozenset[str] = frozenset({
+    "remix", "remixes", "remixed",
+    "mix", "mixes",
+    "edit", "edits", "re-edit",
+    "version",
+    "dub",
+    "bootleg",
+    "remaster", "remastered",
+    "live",
+    "instrumental",
+    "radio",
+    "extended",
+    "club",
+    "rework", "re-work",
+    "rerub", "re-rub",
+    "cut",
+    "acoustic",
+    "unplugged",
+    "demo",
+    "mashup",
+    "vip",
+    "flip",
+    "interlude",
+    "intro",
+    "outro",
+})
 
-    Searches for the file in downloads dir, moves it to
-    downloads/{playlist_name}/{filename}. Returns new filename or None.
+# 4-digit year pattern (1900-2099). A year on the right side of the last
+# " - " split reliably signals a re-release / live / anniversary marker
+# even when no keyword matches (e.g. "Harder Better Faster - Alive 2007").
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+# Minimum character count for a sanitised canonical stem to be considered
+# "meaningful". Below this, we assume the sanitizer stripped everything
+# interesting and fall back to the original filename rather than producing
+# a 1-2 char name like "A!.mp3".
+_MIN_MEANINGFUL_STEM_LEN = 3
+
+
+def _parse_title_and_suffix(title: str) -> tuple[str, str | None]:
+    """Split a Spotify title into `(base_title, remix_suffix_or_none)`.
+
+    Splits on the *last* occurrence of " - " and treats the right side as
+    a suffix candidate. Returns it as the suffix only when the candidate
+    contains either a remix-keyword (whole-word match) or a 4-digit year.
+    Otherwise returns the original title unchanged with `None`.
+    Leading/trailing " - " noise is stripped before splitting so inputs
+    like " - Song" or "Song - " don't produce orphan-dash filenames.
     """
-    safe_name = _sanitize_dirname(playlist_name)
-    target_dir = DOWNLOADS_DIR / safe_name
+    if not title:
+        return title, None
+
+    # Strip leading/trailing " - " / "-" noise that would otherwise leak
+    # into the assembled filename as an orphan dash.
+    cleaned = title.strip().strip("-").strip()
+    if not cleaned or " - " not in cleaned:
+        return cleaned or title, None
+
+    left, _, right = cleaned.rpartition(" - ")
+    left = left.strip()
+    right = right.strip()
+    if not right or not left:
+        return cleaned, None
+
+    lowered = right.lower()
+    # Whole-word tokenisation — split on whitespace and strip punctuation so
+    # "Remix." or "(Remix)" still match, but "Remixer" (unlikely) would not.
+    # `\w-` preserves hyphens so "re-edit" survives as a single token.
+    tokens = {re.sub(r"[^\w-]", "", tok) for tok in lowered.split()}
+    if tokens & _REMIX_KEYWORDS:
+        return left, right
+    if _YEAR_RE.search(lowered):
+        return left, right
+    return cleaned, None
+
+
+def _build_target_filename(
+    artist: str, title: str, original_filename: str
+) -> str:
+    """Build the canonical `{Artist} - {Title (Suffix)}.ext` filename.
+
+    Returns the original filename unchanged if artist or title is empty
+    (defensive fallback — we never want to silently produce a mis-named
+    file when the caller's metadata is missing).
+    """
+    if not artist.strip() or not title.strip():
+        return original_filename
+
+    ext_match = re.search(r"\.[A-Za-z0-9]+$", original_filename)
+    extension = ext_match.group(0).lower() if ext_match else ""
+
+    base, suffix = _parse_title_and_suffix(title)
+    if suffix:
+        stem = f"{artist} - {base} ({suffix})"
+    else:
+        # Use the (possibly dash-stripped) base, not the original title, so
+        # that " - Song" / "Song - " inputs don't leak orphan dashes.
+        stem = f"{artist} - {base}"
+
+    sanitized = _sanitize_dirname(stem)
+    # _sanitize_dirname returns "Unknown" on empty input; that's a signal
+    # everything interesting was stripped — fall back to the original name.
+    if sanitized == "Unknown" or len(sanitized) < _MIN_MEANINGFUL_STEM_LEN:
+        return original_filename
+
+    return f"{sanitized}{extension}"
+
+
+def _move_to_playlist_folder(
+    original_filename: str,
+    playlist_name: str,
+    artist: str,
+    title: str,
+) -> str:
+    """Move a downloaded file into a playlist-named subfolder and rename it.
+
+    Finds the file anywhere under DOWNLOADS_DIR via rglob(original_filename),
+    builds the canonical target name via `_build_target_filename`, moves it
+    to downloads/{playlist_name}/{canonical_name}, and best-effort removes
+    the now-empty source parent directory.
+
+    Returns the filename as it ended up on disk:
+      - canonical name on successful rename+move
+      - original filename on any fall-through (conflict, OSError, not found)
+
+    Cleanup is single-level only (rmdir, which refuses non-empty dirs) and
+    explicitly skipped when the source parent is DOWNLOADS_DIR itself or
+    the target directory.
+    """
+    safe_playlist = _sanitize_dirname(playlist_name)
+    target_dir = DOWNLOADS_DIR / safe_playlist
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    target_name = _build_target_filename(artist, title, original_filename)
+
     # Find the file anywhere in downloads
-    for f in DOWNLOADS_DIR.rglob(filename):
-        if f.is_file() and f.parent != target_dir:
-            dest = target_dir / f.name
-            # Avoid overwriting
-            if dest.exists():
-                return f.name
+    for f in DOWNLOADS_DIR.rglob(original_filename):
+        if not f.is_file() or f.parent == target_dir:
+            continue
+
+        dest = target_dir / target_name
+        if dest.exists():
+            logger.warning(
+                f"Target already exists, leaving source in place: "
+                f"{f.name} → {safe_playlist}/{target_name}"
+            )
+            return original_filename
+
+        source_parent = f.parent
+        try:
+            shutil.move(str(f), str(dest))
+            logger.info(
+                f"Moved+renamed: {original_filename} → "
+                f"{safe_playlist}/{target_name}"
+            )
+        except OSError as e:
+            logger.warning(
+                f"Failed to move {f.name} → {safe_playlist}/{target_name}: "
+                f"{e}. File left in place; manifest will record the "
+                f"original name."
+            )
+            return original_filename
+
+        # Best-effort cleanup of the now-empty source folder. Never touch
+        # DOWNLOADS_DIR itself or the destination directory; rmdir() refuses
+        # non-empty dirs so leaf-level safety is intrinsic.
+        if source_parent != DOWNLOADS_DIR and source_parent != target_dir:
             try:
-                import shutil
-                shutil.move(str(f), str(dest))
-                logger.info(f"Moved: {f.name} → {safe_name}/")
-                return f.name
+                source_parent.rmdir()
             except OSError as e:
-                logger.warning(f"Failed to move {f.name}: {e}")
-                return f.name
-    return filename
+                logger.debug(
+                    f"Left source folder in place (not empty or "
+                    f"inaccessible): {source_parent} ({e})"
+                )
+
+        return target_name
+
+    return original_filename
 
 
 # Search concurrency: how many search calls can be in flight at once.
@@ -604,9 +769,17 @@ async def _download_one_track(
             )
             return
 
-        # Post-download success steps (only on break from loop)
+        # Post-download success steps (only on break from loop).
+        # Order matters: the move can rename the file, so update
+        # track_status.filename BEFORE recording to the manifest — otherwise
+        # _is_already_downloaded on the next run would look for a stale name.
         if playlist_name:
-            _move_to_playlist_folder(track_status.filename, playlist_name)
+            track_status.filename = _move_to_playlist_folder(
+                track_status.filename,
+                playlist_name,
+                track_status.artist,
+                track_status.title,
+            )
         if track_status.track_id:
             _record_download(
                 track_status.track_id,
