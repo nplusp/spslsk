@@ -16,3 +16,12 @@ os.environ.setdefault("SPOTIFY_CLIENT_ID", "test-client-id")
 os.environ.setdefault("SPOTIFY_CLIENT_SECRET", "test-client-secret")
 os.environ.setdefault("SLSKD_URL", "http://localhost:5030")
 os.environ.setdefault("SLSKD_API_KEY", "test-api-key")
+
+# pytest-asyncio config: strict mode (default), each async test must be
+# explicitly marked with @pytest.mark.asyncio. Discoverable here so we
+# don't need a separate pytest.ini / pyproject.toml.
+import pytest
+
+def pytest_collection_modifyitems(config, items):
+    """No-op hook to ensure pytest_asyncio's plugin is loaded."""
+    pass

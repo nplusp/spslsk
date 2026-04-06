@@ -276,6 +276,12 @@ def _move_to_playlist_folder(filename: str, playlist_name: str) -> str | None:
 PARALLEL_SEARCHES = 2
 # Pause between waves in seconds
 WAVE_DELAY = 3
+# Maximum candidates to try per track before giving up. Real-world peer
+# failures (mid-transfer drops, queue full, transient rejections) are common
+# enough that one-shot download attempts silently mark perfectly findable
+# tracks as `error`. Three attempts cover the typical flaky-peer case while
+# bounding worst-case latency to 3 * download_file timeout per track.
+MAX_DOWNLOAD_ATTEMPTS = 3
 
 
 async def _search_and_download_track(
@@ -340,18 +346,47 @@ async def _search_and_download_track(
             _score_file(c["file"]),
         ))
 
-        best = candidates[0]
-        track_status.status = "downloading"
-        track_status.quality = _describe_quality(best["file"])
-        track_status.filename = best["file"].get("filename", "").split("\\")[-1]
-        logger.info(
-            f"Downloading: {track_status.filename} from {best['username']} ({track_status.quality})"
-        )
+        # Try up to MAX_DOWNLOAD_ATTEMPTS candidates in score order. Real-world
+        # peer failures (peer drops connection mid-transfer, queue full,
+        # transient rejection) are common — we have plenty of valid candidates
+        # left in `candidates` after the top one fails, so giving up after
+        # one shot wastes the search work and silently shows the user `error`
+        # for tracks that are perfectly downloadable from a different peer.
+        attempted = candidates[:MAX_DOWNLOAD_ATTEMPTS]
+        last_error: Exception | None = None
+        for attempt_idx, candidate in enumerate(attempted, start=1):
+            track_status.status = "downloading"
+            track_status.quality = _describe_quality(candidate["file"])
+            track_status.filename = candidate["file"].get("filename", "").split("\\")[-1]
+            logger.info(
+                f"Downloading (attempt {attempt_idx}/{len(attempted)}): "
+                f"{track_status.filename} from {candidate['username']} "
+                f"({track_status.quality})"
+            )
+            try:
+                await client.download_file(candidate["username"], candidate["file"])
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Attempt {attempt_idx}/{len(attempted)} failed for "
+                    f"{track_status.artist} - {track_status.title}: {e}"
+                )
+                continue
+            # This candidate succeeded — break out of the fallback loop.
+            track_status.status = "completed"
+            break
+        else:
+            # for/else: runs only when the loop completed without `break`,
+            # i.e. every attempt raised. Mark the track as error with a
+            # message that names the attempt count and the final exception.
+            track_status.status = "error"
+            track_status.error = (
+                f"All {len(attempted)} candidates failed: {last_error}"
+            )
+            return
 
-        await client.download_file(best["username"], best["file"])
-        track_status.status = "completed"
-
-        # Move file into playlist subfolder (download_file now waits for completion)
+        # Post-download success steps. Reached only after the for-loop broke
+        # on a successful download — never reached if all attempts failed.
         if playlist_name:
             _move_to_playlist_folder(track_status.filename, playlist_name)
 
