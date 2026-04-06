@@ -80,6 +80,19 @@ class TestTextLineParsing:
         assert "Remaster" not in t["title"]
         assert "Helplessly Hoping" in t["title"]
 
+    def test_leftmost_separator_wins_across_types(self):
+        # When multiple different separator types appear, the one
+        # appearing FIRST in the line should win (position-based), not
+        # the one with the highest priority in the separator list.
+        # Here ' - ' appears at position 9, '—' at position 21.
+        # The hyphen should win: artist='Artist', title='Title — Version'
+        result = parse_input("Artist - Title — Version")
+        t = result["tracks"][0]
+        assert t["artist"] == "Artist"
+        assert "Title" in t["title"]
+        # The em-dash content stays in the title (it's just noise words).
+        assert "Version" in t["title"] or t["title"] == "Title"
+
     def test_no_separator_marks_needs_review(self):
         result = parse_input("radiohead paranoid android")
         assert result["tracks"][0]["state"] == "needs_review"

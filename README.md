@@ -1,10 +1,10 @@
 # spslsk
 
-Download entire Spotify playlists via Soulseek. Automatically finds the best quality available (FLAC preferred).
+Download tracks from Spotify URLs or plain text lists via Soulseek. Automatically finds the best quality available (FLAC preferred).
 
 ## How it works
 
-Paste a Spotify playlist URL → app parses all tracks → searches Soulseek for each → downloads in best quality → organized in `./downloads/`.
+Paste any mix of Spotify URLs (playlist / album / track) and plain text `Artist - Title` lines → app resolves them into one track list → preview lets you edit / delete / add rows → searches Soulseek for each → downloads in best quality → organized in `./downloads/{list name}/`.
 
 ## Quick Start
 
@@ -57,10 +57,12 @@ Open **http://localhost:8000** and paste a Spotify playlist URL.
 
 ## Features
 
-- Paste any Spotify playlist URL
+- Unified input: paste Spotify playlist, album, or track URLs, plain text lines, or any mix
+- Editable preview: fix ambiguous rows, swap artist ↔ title in bulk, delete what you don't want
+- Strict mode: unparseable rows block the download button until you fix or remove them
 - Automatic quality prioritization (FLAC > WAV > MP3 320 > ...)
-- Skip already-downloaded tracks (tracked by Spotify ID)
-- Playlist history with quick reload
+- Skip already-downloaded tracks (dedup works for both Spotify IDs and manual text entries)
+- History sidebar with one-click reload of the original input
 - Open downloads folder from browser
 - Live download progress
 

@@ -62,20 +62,31 @@ def manual_track_id(artist: str, title: str) -> str:
 
 
 def _split_text_line(line: str) -> Optional[tuple]:
-    """Split a text line into (artist, title) using the first matching separator.
+    """Split a text line into (artist, title) using the leftmost separator.
 
-    Returns None if no separator is found — the caller should then mark the
-    row as needs_review. The first occurrence of the highest-priority
-    separator wins, so ``"A - B - C"`` splits as ``("A", "B - C")``.
+    Returns None if no separator is found — the caller marks the row as
+    needs_review. We pick the *earliest* occurrence across all allowed
+    separators so that a line like ``"Artist - Title — Version"`` splits
+    at the first hyphen (position-based), not at the em-dash the priority
+    list happens to check first. For ``"A - B - C"`` this still gives
+    ``("A", "B - C")`` since the leftmost ` - ` wins.
     """
+    best_idx = -1
+    best_sep = ""
     for sep in _SEPARATORS:
         idx = line.find(sep)
-        if idx != -1:
-            left = line[:idx].strip()
-            right = line[idx + len(sep):].strip()
-            if left and right:
-                return (left, right)
-    return None
+        if idx == -1:
+            continue
+        if best_idx == -1 or idx < best_idx:
+            best_idx = idx
+            best_sep = sep
+    if best_idx == -1:
+        return None
+    left = line[:best_idx].strip()
+    right = line[best_idx + len(best_sep):].strip()
+    if not left or not right:
+        return None
+    return (left, right)
 
 
 def _make_text_track(line: str, manifest: dict) -> dict:
