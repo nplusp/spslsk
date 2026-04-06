@@ -5,4 +5,8 @@ __pycache__/
 .venv/
 slskd-data/
 docs/solutions/
+docs/plans/
+docs/brainstorms/
+docs/ideation/
 plans/
+.pytest_cache/
