@@ -922,6 +922,13 @@ def get_session_status() -> dict:
 
     return {
         "playlist_name": session.playlist_name,
+        # On-disk directory name. The display name the user typed and the
+        # directory it lands in are NOT the same string — _sanitize_dirname
+        # strips <>:"/\|?*[] and collapses whitespace. The UI needs the
+        # sanitized form to show a real path and to ask the host helper to
+        # open the right folder, so we surface it explicitly rather than
+        # letting each consumer re-derive (and diverge from) it.
+        "folder": _sanitize_dirname(session.playlist_name) if session.playlist_name else "",
         "active": session.active,
         "total": total,
         "completed": completed,
