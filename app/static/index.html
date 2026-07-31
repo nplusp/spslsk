@@ -83,9 +83,55 @@
         .row-review:hover { background: rgba(234, 179, 8, 0.14); }
         .row-done { opacity: 0.5; }
         .row-done:hover { opacity: 0.8; }
+        /* Monospace path chips — paths are read character-by-character,
+           so they get a font that makes / and l and 1 distinguishable. */
+        .path-chip {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 6px;
+            padding: 3px 8px;
+            color: #9ca3af;
+            cursor: pointer;
+            transition: border-color .15s, color .15s;
+        }
+        .path-chip:hover { border-color: #1DB954; color: #d1d5db; }
+        .toast {
+            animation: toast-in .18s ease-out;
+        }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .folder-head {
+            background: #101010;
+            cursor: pointer;
+        }
+        .folder-head:hover { background: #171717; }
     </style>
 </head>
 <body class="text-white min-h-screen" x-data="app()" x-cloak>
+
+    <!-- Toast: every folder action reports its outcome here. Silent failure
+         was the original bug — a click that does nothing is indistinguishable
+         from a broken app. -->
+    <div class="fixed bottom-4 right-4 z-[60] space-y-2 max-w-sm">
+        <template x-for="t in toasts" :key="t.id">
+            <div class="toast card rounded-lg px-4 py-2.5 shadow-xl flex items-start gap-2.5"
+                 :class="t.kind === 'error' ? 'border-red-800' : t.kind === 'success' ? 'border-green-800' : 'border-gray-700'">
+                <span class="text-sm flex-shrink-0"
+                      x-text="t.kind === 'error' ? '⚠' : t.kind === 'success' ? '✓' : 'ℹ'"
+                      :class="t.kind === 'error' ? 'text-red-400' : t.kind === 'success' ? 'text-green-500' : 'text-gray-400'"></span>
+                <div class="min-w-0">
+                    <p class="text-xs text-gray-200" x-text="t.message"></p>
+                    <p x-show="t.detail" class="text-[11px] text-gray-500 mt-0.5 break-all font-mono" x-text="t.detail"></p>
+                </div>
+                <button @click="dismissToast(t.id)"
+                        class="text-gray-600 hover:text-gray-300 text-xs flex-shrink-0">&times;</button>
+            </div>
+        </template>
+    </div>
 
     <!-- Top status bar during download -->
     <template x-if="downloading && status">
@@ -154,6 +200,45 @@
                     </div>
                 </div>
 
+                <!-- Completion banner. Deliberately OUTSIDE the `parsed` template:
+                     after a page refresh the session is restored from /api/status
+                     but there is no parsed preview, and that is exactly the moment
+                     a user most needs to be told where their files went. -->
+                <template x-if="finished">
+                    <div class="card rounded-xl p-4 mb-5 border-green-900/60"
+                         style="background: rgba(6, 78, 59, 0.15);">
+                        <div class="flex items-start gap-3">
+                            <span class="text-green-500 text-lg leading-none mt-0.5">&#10003;</span>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-sm font-medium text-green-300">
+                                    <span x-text="status.completed"></span>
+                                    <span x-text="status.completed === 1 ? ' track saved to' : ' tracks saved to'"></span>
+                                    <template x-if="status.not_found + status.errors > 0">
+                                        <span class="text-gray-500 font-normal"
+                                              x-text="' · ' + (status.not_found + status.errors) + ' failed'"></span>
+                                    </template>
+                                </p>
+                                <button class="path-chip mt-1.5 truncate max-w-full text-left block"
+                                        @click="copyPath(finishedPath)"
+                                        :title="'Click to copy: ' + finishedPath"
+                                        x-text="finishedPath"></button>
+                            </div>
+                            <div class="flex gap-2 flex-shrink-0">
+                                <button class="btn-green rounded-lg px-3 py-1.5 text-xs"
+                                        @click="openFolderByListName(status.playlist_name)"
+                                        x-text="helperOk === false ? 'Copy path' : 'Open folder'"
+                                        :title="helperOk === false
+                                            ? 'Folder helper is not running — the path will be copied instead'
+                                            : 'Reveal this folder in your file manager'"></button>
+                                <button class="btn-ghost rounded-lg px-3 py-1.5 text-xs"
+                                        @click="sidebarTab = 'files'; loadFiles()"
+                                        title="Browse the downloaded files without leaving the app"
+                                >Files</button>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+
                 <!-- Preview (after parse) -->
                 <template x-if="parsed">
                     <div class="card rounded-xl p-5">
@@ -181,6 +266,20 @@
                                         <span class="text-gray-600" x-text="' · ' + downloadedCount + ' already downloaded'"></span>
                                     </template>
                                 </p>
+                                <!-- Destination preview: answers "where will this land?"
+                                     BEFORE the download starts, using the sanitized folder
+                                     name the backend will actually create. -->
+                                <div class="flex items-center gap-2 mt-2">
+                                    <span class="text-gray-600 text-xs flex-shrink-0">&#128193;</span>
+                                    <button class="path-chip truncate max-w-full text-left"
+                                            @click="copyPath(destinationPath)"
+                                            :title="'Click to copy: ' + destinationPath"
+                                            x-text="destinationPath"></button>
+                                    <button x-show="listNameSanitized !== listName.trim() && listName.trim()"
+                                            class="text-yellow-600 hover:text-yellow-500 text-xs flex-shrink-0"
+                                            :title="'Folder name differs from the list name: characters &lt;&gt;:&quot;/\\|?*[] are not allowed in folder names, so the folder is called ' + listNameSanitized"
+                                    >&#9432;</button>
+                                </div>
                             </div>
                             <div class="flex flex-col items-end gap-2 flex-shrink-0">
                                 <div class="flex gap-2" x-show="!downloading">
@@ -341,9 +440,11 @@
                                                 &middot; <span x-text="timeAgo(item.ts)"></span>
                                             </p>
                                         </div>
-                                        <a href="#" @click.stop.prevent="openPlaylistFolder(historyName(item))"
+                                        <a href="#" @click.stop.prevent="openFolderByListName(historyName(item))"
                                            class="text-gray-600 hover:text-green-500 flex-shrink-0 p-1"
-                                           title="Open folder">
+                                           :title="helperOk === false
+                                               ? 'Copy this folder\'s path'
+                                               : 'Open this folder in your file manager'">
                                             <span class="text-xs">&#128193;</span>
                                         </a>
                                     </div>
@@ -360,26 +461,58 @@
                         </template>
                     </div>
 
-                    <!-- Files tab -->
+                    <!-- Files tab: grouped by folder, because a flat list of 200
+                         filenames never answers "which list did this come from". -->
                     <div x-show="sidebarTab === 'files'" class="max-h-[calc(100vh-200px)] overflow-y-auto">
-                        <template x-if="downloadedFiles.length > 0">
-                            <div class="p-2 border-b border-gray-800">
-                                <a href="#" @click.prevent="openDownloads"
-                                   class="text-xs text-green-500 hover:text-green-400 flex items-center justify-center gap-1 py-1">
-                                    <span>&#128193;</span>
-                                    <span x-text="folderCopied ? 'Copied!' : 'Open folder'"></span>
-                                </a>
-                            </div>
-                        </template>
-                        <template x-if="downloadedFiles.length === 0">
+                        <div class="p-2 border-b border-gray-800 space-y-1">
+                            <button @click="openFolder('')"
+                                    class="w-full text-xs text-green-500 hover:text-green-400 flex items-center justify-center gap-1 py-1">
+                                <span>&#128193;</span>
+                                <span x-text="helperOk === false ? 'Copy downloads path' : 'Open downloads folder'"></span>
+                            </button>
+                            <button @click="copyPath(paths.host_downloads)"
+                                    class="path-chip w-full truncate text-left"
+                                    :title="'Click to copy: ' + paths.host_downloads"
+                                    x-text="paths.host_downloads"></button>
+                            <p x-show="helperOk === false" class="text-[11px] text-yellow-600 leading-snug pt-1">
+                                Folder helper not running &mdash; start the app with
+                                <span class="font-mono">./start.sh</span> to enable one-click open.
+                            </p>
+                        </div>
+                        <template x-if="folders.length === 0">
                             <p class="text-gray-600 text-xs p-4 text-center">No files yet</p>
                         </template>
                         <div class="divide-y divide-gray-800/50">
-                            <template x-for="file in downloadedFiles" :key="file.path">
-                                <div class="flex items-center gap-2 py-1.5 px-3 text-xs text-gray-400">
-                                    <span class="text-green-500">&#9835;</span>
-                                    <span class="flex-1 truncate" x-text="file.name"></span>
-                                    <span class="text-gray-600 flex-shrink-0" x-text="file.size_mb + 'MB'"></span>
+                            <template x-for="folder in folders" :key="folder.name">
+                                <div>
+                                    <div class="folder-head flex items-center gap-2 py-2 px-3"
+                                         @click="toggleFolder(folder.name)">
+                                        <span class="text-gray-600 text-[10px] w-2 flex-shrink-0"
+                                              x-text="isFolderOpen(folder.name) ? '▾' : '▸'"></span>
+                                        <span class="text-xs flex-shrink-0">&#128193;</span>
+                                        <span class="text-xs text-gray-300 flex-1 truncate"
+                                              x-text="folder.name || 'downloads (loose files)'"
+                                              :title="folder.path"></span>
+                                        <span class="text-[10px] text-gray-600 flex-shrink-0"
+                                              x-text="folder.files + ' · ' + folder.size_mb + 'MB'"></span>
+                                        <button @click.stop="openFolder(folder.relative_path)"
+                                                class="text-gray-600 hover:text-green-500 flex-shrink-0 px-1"
+                                                :title="helperOk === false ? 'Copy path' : 'Open in file manager'"
+                                        >&#8599;</button>
+                                    </div>
+                                    <div x-show="isFolderOpen(folder.name)" class="bg-black/30">
+                                        <template x-for="file in filesInFolder(folder.name)" :key="file.path">
+                                            <div class="flex items-center gap-2 py-1.5 pl-8 pr-3 text-xs text-gray-400 hover:bg-white/5">
+                                                <span class="text-green-500 flex-shrink-0">&#9835;</span>
+                                                <span class="flex-1 truncate" :title="file.host_path" x-text="file.name"></span>
+                                                <span class="text-gray-600 flex-shrink-0" x-text="file.size_mb + 'MB'"></span>
+                                                <a :href="'/api/file?path=' + encodeURIComponent(file.path)"
+                                                   class="text-gray-600 hover:text-green-500 flex-shrink-0"
+                                                   title="Download this file through the browser"
+                                                >&#8595;</a>
+                                            </div>
+                                        </template>
+                                    </div>
                                 </div>
                             </template>
                         </div>
@@ -417,12 +550,19 @@
                     <summary class="p-4 text-sm font-semibold text-gray-400 cursor-pointer">
                         Downloaded Files (<span x-text="downloadedFiles.length"></span>)
                     </summary>
-                    <div class="px-4 pb-4 space-y-1">
+                    <div class="px-4 pb-4 space-y-2">
+                        <button @click="copyPath(paths.host_downloads)"
+                                class="path-chip w-full truncate text-left"
+                                x-text="paths.host_downloads"></button>
                         <template x-for="file in downloadedFiles" :key="file.path">
                             <div class="flex items-center gap-2 text-xs text-gray-400">
                                 <span class="text-green-500">&#9835;</span>
+                                <span x-show="file.folder" class="text-gray-600 flex-shrink-0 truncate max-w-[80px]"
+                                      x-text="file.folder + '/'"></span>
                                 <span class="truncate" x-text="file.name"></span>
                                 <span class="text-gray-600 ml-auto" x-text="file.size_mb + 'MB'"></span>
+                                <a :href="'/api/file?path=' + encodeURIComponent(file.path)"
+                                   class="text-gray-600 hover:text-green-500">&#8595;</a>
                             </div>
                         </template>
                     </div>
@@ -451,11 +591,28 @@
                 slskdOk: false,
                 pollInterval: null,
                 downloadedFiles: [],
-                folderCopied: false,
+                folders: [],
+                openFolders: {},        // folder name -> expanded?
+
+                // --- Where files land ---
+                // Filled from /api/paths. Defaults keep every path-rendering
+                // binding from printing "undefined" during the first paint.
+                paths: {
+                    host_downloads: './downloads',
+                    container_downloads: '/app/downloads',
+                    helper_url: 'http://127.0.0.1:8001',
+                    is_host_path_known: false,
+                },
+                // null = not probed yet, true = can open natively,
+                // false = degrade to copy-path. Tri-state matters: we must not
+                // label the button "Copy path" before we know the helper is down.
+                helperOk: null,
 
                 // --- Sidebar state ---
                 history: [],
                 sidebarTab: 'history',
+                toasts: [],
+                _toastSeq: 0,
 
                 // --- Derived counts ---
                 get readyCount() {
@@ -473,6 +630,35 @@
                 get hasTextRows() {
                     if (!this.parsed) return false;
                     return this.parsed.tracks.some(t => t.source === 'text');
+                },
+
+                // Display-only mirror of app/downloader.py::_sanitize_dirname.
+                // Kept client-side so the destination updates as the user types;
+                // the backend stays the single authority for actually opening a
+                // folder (see openFolderByListName -> /api/resolve-folder), so a
+                // drift here can only ever produce a stale preview, never a
+                // wrong file operation.
+                get listNameSanitized() {
+                    const raw = (this.listName || '').replace(/[<>:"/\\|?*\[\]]/g, '');
+                    const collapsed = raw.replace(/\s+/g, ' ').trim();
+                    return collapsed ? collapsed.slice(0, 100) : 'Unknown';
+                },
+
+                get destinationPath() {
+                    const root = this.paths.host_downloads.replace(/\/+$/, '');
+                    return `${root}/${this.listNameSanitized}`;
+                },
+
+                // A session that ran to completion (or was stopped) and still has
+                // results worth pointing at. Drives the "where did it go" banner.
+                get finished() {
+                    return !!this.status && !this.downloading && this.status.total > 0;
+                },
+
+                get finishedPath() {
+                    const root = this.paths.host_downloads.replace(/\/+$/, '');
+                    const folder = this.status && this.status.folder;
+                    return folder ? `${root}/${folder}` : root;
                 },
 
                 // Display tracks: during download we overlay backend status onto
@@ -513,6 +699,10 @@
 
                 // --- Lifecycle ---
                 async init() {
+                    // Paths first: helper_url comes from it, and every path chip
+                    // renders from it.
+                    await this.loadPaths();
+                    this.probeHelper();   // fire-and-forget; buttons relabel when it lands
                     await this.checkHealth();
                     await this.loadFiles();
                     this.loadHistory();
@@ -602,6 +792,7 @@
                         const data = await resp.json();
                         this.downloadedFiles = data.files || [];
                     } catch {}
+                    await this.loadFolders();
                 },
 
                 async checkHealth() {
@@ -818,6 +1009,19 @@
                                 await this.loadFiles();
                                 if (this.downloadedFiles.length > 0) {
                                     this.sidebarTab = 'files';
+                                    // Expand the folder this session just filled so
+                                    // the sidebar shows the new files, not a
+                                    // collapsed row the user has to hunt for.
+                                    const folder = this.status.folder;
+                                    if (folder) this.openFolders[folder] = true;
+                                }
+                                if (this.status.completed > 0) {
+                                    this.toast(
+                                        `Done — ${this.status.completed} saved`,
+                                        'success',
+                                        this.finishedPath,
+                                    );
+                                    this.onDownloadFinished();
                                 }
                             }
                         } catch {}
@@ -831,25 +1035,154 @@
                     }
                 },
 
-                async openDownloads() {
+                // --- Toasts ---
+                toast(message, kind = 'info', detail = '') {
+                    const id = ++this._toastSeq;
+                    this.toasts.push({id, message, kind, detail});
+                    setTimeout(() => this.dismissToast(id), kind === 'error' ? 7000 : 4000);
+                },
+
+                dismissToast(id) {
+                    this.toasts = this.toasts.filter(t => t.id !== id);
+                },
+
+                // --- Paths & host helper ---
+                async loadPaths() {
                     try {
-                        await fetch('http://localhost:8001/open-folder', {method: 'POST'});
+                        const resp = await fetch('/api/paths');
+                        if (resp.ok) this.paths = await resp.json();
+                    } catch {}
+                },
+
+                // Probe once at startup so buttons can be labelled truthfully
+                // before the user clicks. AbortController caps the wait: an
+                // unreachable helper on some systems hangs rather than
+                // refusing, and a stalled probe would pin helperOk at null.
+                async probeHelper() {
+                    const ctl = new AbortController();
+                    const timer = setTimeout(() => ctl.abort(), 1500);
+                    try {
+                        const resp = await fetch(`${this.paths.helper_url}/health`, {signal: ctl.signal});
+                        const data = await resp.json();
+                        this.helperOk = !!data.can_open;
                     } catch {
-                        navigator.clipboard.writeText('open ./downloads/').then(() => {
-                            this.folderCopied = true;
-                            setTimeout(() => this.folderCopied = false, 2000);
-                        });
+                        this.helperOk = false;
+                    } finally {
+                        clearTimeout(timer);
                     }
                 },
 
-                async openPlaylistFolder(name) {
+                async copyPath(path) {
                     try {
-                        await fetch('http://localhost:8001/open-folder', {
+                        await navigator.clipboard.writeText(path);
+                        this.toast('Path copied to clipboard', 'success', path);
+                    } catch {
+                        // Clipboard API needs a secure context; over plain http
+                        // on a non-localhost host it simply is not there.
+                        this.toast('Could not copy — select the path manually', 'error', path);
+                    }
+                },
+
+                // Single entry point for every "open folder" affordance.
+                // `relative` is a path relative to downloads/ ('' = the root).
+                async openFolder(relative = '', displayPath = null) {
+                    const root = this.paths.host_downloads.replace(/\/+$/, '');
+                    const full = relative ? `${root}/${relative}` : root;
+                    const shown = displayPath || full;
+
+                    if (this.helperOk === false) {
+                        await this.copyPath(shown);
+                        return;
+                    }
+
+                    try {
+                        const resp = await fetch(`${this.paths.helper_url}/open-folder`, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({subfolder: name}),
+                            body: JSON.stringify({subfolder: relative}),
                         });
+                        const data = await resp.json().catch(() => ({}));
+                        if (!resp.ok || data.ok === false) {
+                            throw new Error(data.error || `Helper returned ${resp.status}`);
+                        }
+                        this.helperOk = true;
+                        this.toast('Opened in your file manager', 'success', data.path || shown);
+                    } catch (e) {
+                        // The helper only runs while ./start.sh is running. Rather
+                        // than dying quietly (the original bug), say so and hand
+                        // the user the path they were after.
+                        this.helperOk = false;
+                        await this.copyPath(shown);
+                        this.toast(
+                            'Folder helper not reachable — run ./start.sh to enable one-click open',
+                            'error',
+                        );
+                    }
+                },
+
+                // History and the completion banner both hold a *display* name;
+                // the folder on disk is the sanitized form. Ask the backend to do
+                // that mapping so there is exactly one implementation of it.
+                async openFolderByListName(name) {
+                    if (!name) { await this.openFolder(''); return; }
+                    try {
+                        const resp = await fetch(`/api/resolve-folder?name=${encodeURIComponent(name)}`);
+                        const data = await resp.json();
+                        if (!data.exists) {
+                            this.toast(
+                                `No folder for "${name}" yet — opening downloads instead`,
+                                'info', data.path,
+                            );
+                            await this.openFolder('');
+                            return;
+                        }
+                        await this.openFolder(data.relative_path, data.path);
+                    } catch {
+                        await this.openFolder('');
+                    }
+                },
+
+                // Called once when a session finishes with at least one saved
+                // track. The banner, the toast and the auto-expanded Files tab
+                // have already fired by this point — this hook is only for any
+                // *additional* completion behaviour (e.g. auto-opening the
+                // folder, or a desktop notification).
+                //
+                // TODO(you): decide what, if anything, should happen here.
+                //   - openFolderByListName(this.status.playlist_name) auto-reveals
+                //     the folder — zero clicks, but it steals window focus, which
+                //     is hostile during a long queue you left running.
+                //   - A Notification API call is less intrusive but needs a
+                //     permission prompt the first time.
+                //   - Leaving it empty is a legitimate choice: the banner already
+                //     answers "where did it go" without touching the user's focus.
+                onDownloadFinished() {
+                },
+
+                // --- Folder grouping (Files tab) ---
+                async loadFolders() {
+                    try {
+                        const resp = await fetch('/api/folders');
+                        const data = await resp.json();
+                        this.folders = data.folders || [];
+                        // Auto-expand when there is exactly one folder: an extra
+                        // click to see the only thing there is is pure friction.
+                        if (this.folders.length === 1) {
+                            this.openFolders[this.folders[0].name] = true;
+                        }
                     } catch {}
+                },
+
+                toggleFolder(name) {
+                    this.openFolders[name] = !this.openFolders[name];
+                },
+
+                isFolderOpen(name) {
+                    return !!this.openFolders[name];
+                },
+
+                filesInFolder(name) {
+                    return this.downloadedFiles.filter(f => f.folder === name);
                 },
             };
         }

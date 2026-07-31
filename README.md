@@ -66,12 +66,45 @@ Open **http://localhost:8000** and paste a Spotify playlist URL.
 - Automatic quality prioritization (FLAC > WAV > MP3 320 > ...)
 - Skip already-downloaded tracks (dedup works for both Spotify IDs and manual text entries)
 - History sidebar with one-click reload of the original input
-- Open downloads folder from browser
+- Always know where files landed: destination path shown before, during, and after a download
+- One-click "Open folder" in your native file manager, with copy-path fallback
+- Files sidebar grouped by list, with per-file download straight from the browser
 - Live download progress
 
 ## Downloads
 
-Files are saved to `./downloads/` in the project directory.
+Files are saved to `./downloads/{list name}/` in the project directory.
+
+The folder name is not always byte-identical to the list name you typed:
+characters that are illegal in filenames (`<>:"/\|?*[]`) are stripped, and
+whitespace is collapsed. The UI always shows the **real** path — click any
+path chip to copy it.
+
+### "Open folder" and the host helper
+
+The backend runs inside Docker and cannot spawn Finder or Nautilus. `start.sh`
+therefore launches `host_helper.py` on the host at `127.0.0.1:8001`, and the
+browser calls it directly. Consequences:
+
+- Started with `./start.sh` → "Open folder" buttons open your file manager.
+- Started with a bare `docker compose up` → no helper. The buttons relabel
+  themselves to **Copy path** and copy the folder path to your clipboard
+  instead. Nothing fails silently.
+
+You can also run the helper on its own:
+
+```bash
+python3 host_helper.py --downloads ./downloads --port 8001
+```
+
+It binds to `127.0.0.1` only, and refuses any path that resolves outside
+`./downloads` (checked after resolving symlinks and `..`).
+
+### Getting files without a file manager
+
+Every file in the **Files** sidebar has a ↓ link that streams it through the
+browser (`GET /api/file?path=...`), so downloads are retrievable even on a
+headless or remote host.
 
 ## Troubleshooting
 
@@ -83,6 +116,19 @@ This means `slskd-data/slskd.yml` is out of sync with `SLSKD_API_KEY` in `.env`.
 
 **Tracks not found**
 Some niche artists may have limited availability on Soulseek. Try again later — it's a P2P network, availability changes.
+
+**"Open folder" does nothing / just copies the path**
+The host helper isn't running. It's started by `./start.sh` and lives only as
+long as that script does — if you started the stack with `docker compose up`,
+or closed the terminal running `start.sh`, the helper is gone. Either re-run
+`./start.sh`, or start the helper alone:
+`python3 host_helper.py --downloads ./downloads`.
+
+**The path shown in the UI starts with `/app/downloads`**
+The backend didn't receive `HOST_DOWNLOADS_DIR`, so it's showing its own
+container path. `./start.sh` exports it automatically; a bare
+`docker compose up` does not. Run `HOST_DOWNLOADS_DIR="$(pwd)/downloads" docker compose up`
+or just use `./start.sh`.
 
 **"0 results" for popular tracks**
 If you just started, wait a minute for slskd to fully connect to the Soulseek network.

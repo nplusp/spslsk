@@ -4,6 +4,23 @@ set -e
 echo "=== Spotify → Soulseek Downloader ==="
 echo ""
 
+# Every path below (slskd-data, downloads, the compose file) is relative to
+# the project root, so anchor there instead of trusting the caller's cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Probe the folder helper without depending on curl being installed —
+# python3 is already a hard requirement for running the helper itself.
+helper_alive() {
+    python3 - <<'PY' > /dev/null 2>&1
+import sys, urllib.request
+try:
+    urllib.request.urlopen("http://127.0.0.1:8001/health", timeout=1).read()
+except Exception:
+    sys.exit(1)
+PY
+}
+
 # Detect docker compose command (v2 plugin vs v1 standalone)
 if docker compose version > /dev/null 2>&1; then
     COMPOSE="docker compose"
@@ -134,6 +151,10 @@ else
 fi
 
 echo "Starting services..."
+# HOST_DOWNLOADS_DIR tells the backend the real host path of ./downloads so
+# the UI can display and copy a path the user can actually paste into Finder
+# — inside the container it only ever sees /app/downloads.
+export HOST_DOWNLOADS_DIR="$(pwd)/downloads"
 $COMPOSE up --build -d
 
 echo ""
@@ -151,68 +172,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Detect OS for the "open folder" command
-if [ "$(uname)" = "Darwin" ]; then
-    OPEN_CMD="open"
-elif command -v xdg-open > /dev/null 2>&1; then
-    OPEN_CMD="xdg-open"
-else
-    OPEN_CMD=""
-fi
-
-if [ -n "$OPEN_CMD" ]; then
-    python3 -c "
-import http.server, subprocess, json, os
-
-OPEN_CMD = '$OPEN_CMD'
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path == '/open-folder':
-            folder = os.path.join(os.getcwd(), 'downloads')
-            # Check for subfolder in request body
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                if length > 0:
-                    body = json.loads(self.rfile.read(length))
-                    sub = body.get('subfolder', '')
-                    if sub:
-                        # Try exact match first, then sanitized
-                        candidate = os.path.join(folder, sub)
-                        if not os.path.isdir(candidate):
-                            safe = sub.replace('/', '').replace('..', '')[:100]
-                            candidate = os.path.join(folder, safe)
-                        if os.path.isdir(candidate):
-                            folder = candidate
-            except Exception:
-                pass
-            os.makedirs(folder, exist_ok=True)
-            subprocess.Popen([OPEN_CMD, folder])
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps({'ok': True}).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'POST')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
-    def log_message(self, *args):
-        pass  # Suppress logs
-
-http.server.HTTPServer(('127.0.0.1', 8001), Handler).serve_forever()
-" &
+# The helper lives in host_helper.py (not inlined here) so it can be read,
+# tested, and run standalone. Port 8001 may already be held by a helper from
+# a previous run that outlived its shell — reuse it instead of dying on
+# "address already in use", which used to leave the UI with no opener at all.
+if helper_alive; then
+    echo "Folder helper already running on :8001 — reusing it."
+elif [ -f "$SCRIPT_DIR/host_helper.py" ]; then
+    python3 "$SCRIPT_DIR/host_helper.py" --downloads "$SCRIPT_DIR/downloads" --port 8001 &
     HELPER_PID=$!
+    # Give it a moment to bind, then report honestly whether it came up.
+    sleep 1
+    if helper_alive; then
+        echo "Folder helper running on :8001 (\"Open folder\" buttons active)."
+    else
+        echo "WARNING: folder helper failed to start — the UI will fall back"
+        echo "         to copying the downloads path to your clipboard."
+        HELPER_PID=""
+    fi
+else
+    echo "WARNING: host_helper.py not found — \"Open folder\" will fall back to"
+    echo "         copying the path to your clipboard."
 fi
 
 echo "=== Ready! ==="
-echo "  App:   http://localhost:8000"
-echo "  slskd: http://localhost:5030 (user: slskd / pass: slskd)"
+echo "  App:       http://localhost:8000"
+echo "  slskd:     http://localhost:5030 (user: slskd / pass: slskd)"
+echo "  Downloads: $HOST_DOWNLOADS_DIR"
 echo ""
 echo "To stop: Ctrl+C or $COMPOSE down"
 

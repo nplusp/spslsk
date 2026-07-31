@@ -33,6 +33,11 @@ services:
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
       - SLSKD_API_KEY=${SLSKD_API_KEY}
       - SLSKD_URL=http://slskd:5030
+      # Host-side absolute path of ./downloads. The container only knows
+      # /app/downloads, which is useless to show a user — the UI displays and
+      # copies this instead. start.sh exports it; the default keeps a bare
+      # `docker compose up` working with a relative-but-honest path.
+      - HOST_DOWNLOADS_DIR=${HOST_DOWNLOADS_DIR:-}
     volumes:
       - ./downloads:/app/downloads
       - ./app:/app/app
